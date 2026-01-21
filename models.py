@@ -552,6 +552,7 @@ class SimpleTransformerModel(nn.Module):
     def __init__(
         self,
         input_dim: int = 1,
+        num_classes: int = 1,
         d_model: int = 32,
         n_heads: int = 2,
         num_layers: int = 1,
@@ -583,7 +584,7 @@ class SimpleTransformerModel(nn.Module):
             aggregator=aggregator,
         )       
         self.pool = pool
-        self.output_linear = nn.Linear(d_model, 1)
+        self.output_linear = nn.Linear(d_model, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_linear(x) # [B, S]

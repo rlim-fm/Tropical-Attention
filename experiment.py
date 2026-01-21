@@ -6,7 +6,7 @@ import csv
 import time
 from torch.utils.data import DataLoader
 from dataloaders import *
-from models_new import *
+from models import *
 import pandas as pd
 import schedulefree
 import ast
@@ -549,7 +549,7 @@ if __name__ == "__main__":
 
         experiment = Experiment(
             device= args.device,
-            top_cat = args.tag,
+            #top_cat = args.tag,
             **config_params,
         )
         experiment.run()
