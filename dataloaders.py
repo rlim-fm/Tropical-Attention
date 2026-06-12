@@ -233,12 +233,12 @@ class KnapsackDataset(Dataset):
     def __init__(
         self,
         n_samples: int = 1000,
-        length_range: Tuple[int, int] = (10, 10),
-        value_range:  Tuple[int, int] = (1, 10),
-        weight_range: Tuple[int, int] = (1, 10),
-        target_range: Tuple[int, int] = (1, 30),
+        length_range: Tuple[int, int] = (3, 3),
+        value_range:  Tuple[int, int] = (1, 100),
+        weight_range: Tuple[int, int] = (1, 1),
+        target_range: Tuple[int, int] = (2, 2),
         noise_prob: float = 0.0,
-        adversarial_range: Tuple[int, int] = (10, 30),
+        adversarial_range: Tuple[int, int] = (0, 0),
         classification: bool = True,
         seed: int = 42,
         **kwargs
