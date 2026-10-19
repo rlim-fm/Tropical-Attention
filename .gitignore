@@ -222,3 +222,13 @@ wandb/
 
 # DS_Store
 .DS_Store
+
+literature
+CLAUDE.md
+
+# expkit: bulky outputs (track runs.jsonl, configs.jsonl, registry.jsonl, frozen.yaml)
+campaigns/**/results/curves.jsonl
+campaigns/**/results/curves.jsonl.cleared-*
+campaigns/**/results/artifacts/
+campaigns/**/results/*.tmp-*
+slurm/*.out

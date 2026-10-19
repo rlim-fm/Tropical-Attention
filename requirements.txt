@@ -41,3 +41,9 @@ torch==2.6.0
 triton==3.2.0
 typing_extensions==4.13.1
 tzdata==2025.2
+quickselect
+# expkit
+pyyaml
+statsmodels
+jinja2
+pytest

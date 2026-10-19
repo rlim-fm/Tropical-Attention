@@ -21,6 +21,27 @@ def set_subset_sum_decision(x, T):
         possible_sums |= {s + val for s in possible_sums}
     return 1 if T in possible_sums else 0
 
+def subset_sum_witness(xs, T):
+    """0/1 mask over xs of one subset summing to T (all zeros if none).
+
+    DP over reachable sums with parent pointers; each sum is first reached by
+    the earliest prefix of xs, so the reconstruction is canonical.
+    """
+    parent = {0: None}                      # sum -> (previous sum, item index)
+    for idx, val in enumerate(xs):
+        for s in list(parent):
+            if s + val not in parent:
+                parent[s + val] = (s, idx)
+    mask = [0] * len(xs)
+    if T not in parent or T == 0:
+        return mask                         # T == 0: the empty subset
+    s = T
+    while parent[s] is not None:
+        s, idx = parent[s]
+        mask[idx] = 1
+    return mask
+
+
 class SubsetSumDecisionDataset(Dataset):
     """
     Dataset for subset-sum decision with a dynamic target generation strategy to guarantee
@@ -34,6 +55,7 @@ class SubsetSumDecisionDataset(Dataset):
         value_range: tuple[int,int] = (-2,2),
         noise_prob: float = 0.0,
         adversarial_range: tuple[int,int] = (10,30),
+        classification: bool = True,
         seed: int = 42,
         **kwargs
     ):
@@ -46,6 +68,7 @@ class SubsetSumDecisionDataset(Dataset):
         self.value_range = value_range
         self.noise_prob = noise_prob
         self.adversarial_range = adversarial_range
+        self.classification = classification
         
         self.data = []
         for _ in range(n_samples):
@@ -81,7 +104,11 @@ class SubsetSumDecisionDataset(Dataset):
                     T = max_achievable + random.randint(1, 5)
                 y = 0
             
-            y_t = torch.tensor(y, dtype=torch.float)
+            if self.classification:
+                # Subset selection: one witness subset of x_sorted summing to T.
+                y_t = torch.tensor(subset_sum_witness(x_sorted, T), dtype=torch.float)
+            else:
+                y_t = torch.tensor(y, dtype=torch.float)
             x_t_data_list = [[xi_val, T] for xi_val in x_sorted]
             x_t = torch.tensor(x_t_data_list, dtype=torch.float)
 
@@ -397,7 +424,8 @@ class FractionalKnapsackDataset(Dataset):
                 opt_val, fractions = set_fractional_knapsack(
                     items_sorted, capacity, return_items=True
                 )
-                y = torch.tensor(fractions, dtype=torch.float32)
+                # Subset selection: the items taken at all (fraction > 0).
+                y = torch.tensor([1.0 if f > 0 else 0.0 for f in fractions], dtype=torch.float32)
             else:
                 opt_val = set_fractional_knapsack(items_sorted, capacity)
                 y = torch.log1p(torch.tensor(opt_val, dtype=torch.float32))
@@ -929,6 +957,30 @@ class BinPackingDataset(Dataset):
 
 
 # ----- Longest Increasing Subsequence (LIS) Length ----- (regression)
+def lis_mask(nums):
+    """0/1 mask of one longest strictly increasing subsequence of nums.
+
+    O(n^2) DP; ties go to the smallest end index and, walking back, to the
+    smallest predecessor index, so the subsequence is canonical.
+    """
+    n = len(nums)
+    if n == 0:
+        return []
+    length = [1] * n
+    for i in range(n):
+        for j in range(i):
+            if nums[j] < nums[i] and length[j] + 1 > length[i]:
+                length[i] = length[j] + 1
+    best = max(length)
+    i = length.index(best)
+    mask = [0] * n
+    mask[i] = 1
+    while length[i] > 1:
+        i = next(j for j in range(i) if nums[j] < nums[i] and length[j] == length[i] - 1)
+        mask[i] = 1
+    return mask
+
+
 def calculate_lis_length(nums):
     if not nums:
         return 0
@@ -959,6 +1011,7 @@ class LISDataset(Dataset):
         value_range: tuple[int,int] = (1,10),
         noise_prob: float = 0.0,
         adversarial_range: tuple[int,int] = (10,30),
+        classification: bool = True,
         seed: int = 42,
         **kwargs
     ):
@@ -970,6 +1023,7 @@ class LISDataset(Dataset):
         self.value_range       = value_range
         self.noise_prob        = noise_prob
         self.adversarial_range = adversarial_range
+        self.classification    = classification
 
         self.data = []
         for _ in range(n_samples):
@@ -995,7 +1049,11 @@ class LISDataset(Dataset):
             x_t_list = temp_xt_list
 
             x_t = torch.tensor(x_t_list, dtype=torch.float)
-            y_t = torch.tensor(float(y_val), dtype=torch.float)
+            if self.classification:
+                # Subset selection: the positions of one LIS.
+                y_t = torch.tensor(lis_mask(sequence), dtype=torch.float)
+            else:
+                y_t = torch.tensor(float(y_val), dtype=torch.float)
 
             self.data.append((x_t, y_t))
 
@@ -1082,6 +1140,24 @@ class ConvexHullDataset(Dataset):
     def __getitem__(self, idx): return self.data[idx]
     
 # ----- three sum decision -----
+def three_sum_witness(xs_sorted, target=0):
+    """0/1 mask over the sorted list of the first triple (by two-pointer) summing to target."""
+    n = len(xs_sorted)
+    mask = [0] * n
+    for i in range(n - 2):
+        left, right = i + 1, n - 1
+        while left < right:
+            s = xs_sorted[i] + xs_sorted[left] + xs_sorted[right]
+            if s == target:
+                mask[i] = mask[left] = mask[right] = 1
+                return mask
+            if s < target:
+                left += 1
+            else:
+                right -= 1
+    return mask
+
+
 def three_sum_decision(xs, target=0):
     """
     Checks if any three *distinct* elements (by index) in list 'xs' sum to 'target'.
@@ -1140,6 +1216,7 @@ class ThreeSumDecisionDataset(Dataset):
         target_range: tuple[int,int] = (0, 0),   # Target T range (fixed T=0 default)
         noise_prob: float = 0.0,
         adversarial_range: tuple[int,int] = (100, 200), # Noise magnitude
+        classification: bool = True,
         seed: int = 42,
         **kwargs
     ):
@@ -1166,7 +1243,11 @@ class ThreeSumDecisionDataset(Dataset):
             x_t_list_of_pairs = [[val, T] for val in xs_sorted]
             x_t = torch.tensor(x_t_list_of_pairs, dtype=torch.float)
             
-            y_t = torch.tensor(y_val, dtype=torch.long)
+            if classification:
+                # Subset selection: one witness triple over the (sorted) tokens.
+                y_t = torch.tensor(three_sum_witness(xs_sorted, T), dtype=torch.float)
+            else:
+                y_t = torch.tensor(y_val, dtype=torch.long)
             
             if self.noise_prob > 0:
                 for i in range(x_t.shape[0]):
@@ -1239,8 +1320,16 @@ class FloydWarshallDataset(Dataset):
                 # We map this to a valid class index, e.g., n.
                 # The classes will be {0, 1, ..., n-1} for predecessors,
                 # and class {n} for "no predecessor".
-                Pi[Pi == -9999] = n 
-                y_t = torch.tensor(Pi.flatten(), dtype=torch.long)
+                # Subset selection over the n*n edge tokens: (u, v) is selected
+                # iff it is the last edge of some shortest path i -> v, i.e. the
+                # union of the shortest-path trees of every source.
+                mask = np.zeros((n, n), dtype=np.float32)
+                for i in range(n):
+                    for v in range(n):
+                        u = Pi[i, v]
+                        if u >= 0:
+                            mask[u, v] = 1.0
+                y_t = torch.tensor(mask.flatten(), dtype=torch.float)
             else:
                 # Regression task remains the same: predict distances
                 large_val_for_inf = n * self.weight_range[1] + 1

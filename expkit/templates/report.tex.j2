@@ -1,0 +1,161 @@
+<# The campaign report: jinja with LaTeX-safe delimiters (see expkit/latex.py). #>
+<# Every figure and table has a caption and a label; prose cites with \autoref. #>
+\documentclass[10pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,longtable,graphicx,makecell,array}
+\usepackage[hidelinks]{hyperref}
+\setlength{\tabcolsep}{4pt}
+<% macro facet_cols(row, names) %><% for f in names %><< row[f]|level >> & <% endfor %><% endmacro %>
+<% macro facet_head(names) %><% for f in names %>\texttt{<< f|escape >>} & <% endfor %><% endmacro %>
+<% macro colspec(n, rest) %><% for _ in range(n) %>l<% endfor %><< rest >><% endmacro %>
+\title{<< cfg.experiment|escape >>: << cfg.campaign|escape >>}
+\date{<< built|escape >>}
+\begin{document}
+\maketitle
+
+<% set head = sections[0] if sections else None %>
+\section{Key results}
+This report covers << n_runs >> runs (<< n_seeds >> seeds; << n_diverged >> diverged<< ('; %d never completed, see \\texttt{registry.jsonl}' % failures) if failures else '' >>) under frozen hash \texttt{<< frozen_hash >>}.
+<% if head %>
+\paragraph{Where to look.} The headline metric is \texttt{<< head.metric|escape >>} (<< 'lower' if head.direction == 'min' else 'higher' >> is better).
+<% if head.figure %>
+\autoref{fig:<< head.metric >>} plots it against \texttt{<< x_factor|escape >>}.
+<% endif %>
+\autoref{tab:summary-<< head.metric >>} gives every cell's mean with its 95\% bootstrap CI.
+<% if head.vs_control %>
+\autoref{tab:control-<< head.metric >>} compares each level with the control.
+<% endif %>
+<% if head.trend %>
+\autoref{tab:trend-<< head.metric >>} gives the trend.
+<% endif %>
+<% if head.paired %>
+\autoref{tab:paired-<< head.metric >>} gives the paired contrasts.
+<% endif %>
+<% if head.ols %>
+\autoref{tab:ols-<< head.metric >>} gives the regression terms.
+<% endif %>
+Its tests take the << head.path.path|default('parametric')|escape >> path: << head.path.reason|default('')|escape >>.
+<% endif %>
+Cells are compared within a seed: a seed index fixes the data and the initialization.
+Comparisons are marked significant at $p < << alpha >>$ after the stated correction.
+
+<% for s in sections %>
+<% if not s.headline and loop.index0 == 1 %>
+\clearpage
+\appendix
+\section{Other metrics}
+<% endif %>
+\subsection{\texttt{<< s.metric|escape >>}}
+<% if s.figure %>
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\textwidth]{<< s.figure >>}
+\caption{\texttt{<< s.metric|escape >>} against \texttt{<< x_factor|escape >>}: the mean over seeds with a 95\% bootstrap CI<% if factors|length > 1 %>, one line per combination of the other factors<% endif %>.}
+\label{fig:<< s.metric >>}
+\end{figure}
+<% endif %>
+
+{\small
+\begin{longtable}{<< colspec(factors|length, 'rlrrr') >>}
+\caption{\texttt{<< s.metric|escape >>} per cell: mean, 95\% bootstrap CI, SD, seeds, diverged runs.}\label{tab:summary-<< s.metric >>}\\
+\toprule
+<< facet_head(factors) >>mean & 95\% CI & SD & $n$ & div.\\
+\midrule
+\endhead
+<% for r in s.summary %>
+<< facet_cols(r, factors) >><< r.mean|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.sd|num(3) >> & << r.n >> & << r.diverged >>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+
+<% if s.vs_control %>
+<% set cf = control|list|first %>
+{\small
+\begin{longtable}{<< colspec(factors|length, 'rrrl') >>}
+\caption{\texttt{<< s.metric|escape >>}: each level of \texttt{<< cf|escape >>} against its control (<< control[cf]|level >>), within each combination of the other factors. << s.vs_control[0].test_path|escape >>.}\label{tab:control-<< s.metric >>}\\
+\toprule
+<< facet_head(factors) >>difference & 95\% CI & $p$ & \\
+\midrule
+\endhead
+<% for r in s.vs_control %>
+<< facet_cols(r, factors) >><< r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >> & <% if r.p is not none and r.p < alpha %>*<% endif %>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+<% endif %>
+
+<% if s.trend %>
+<% set tf = factors|reject('equalto', s.trend[0].factor)|list %>
+{\small
+\begin{longtable}{<< colspec(tf|length, 'rrrrr') >>}
+\caption{\texttt{<< s.metric|escape >>} against << s.trend[0].transform|escape >> \texttt{<< s.trend[0].factor|escape >>}: << s.trend[0].test_path|escape >>, with the Jonckheere--Terpstra ordered-trend $\tau$ and $p$.}\label{tab:trend-<< s.metric >>}\\
+\toprule
+<< facet_head(tf) >>estimate & 95\% CI & $p$ & JT $\tau$ & JT $p$\\
+\midrule
+\endhead
+<% for r in s.trend %>
+<< facet_cols(r, tf) >><< r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >> & << r.jt_tau|default(none)|num(3) >> & << r.jt_p|default(none)|pvalue >>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+<% endif %>
+
+<% if s.paired %>
+{\small
+\begin{longtable}{lrrrl}
+\caption{\texttt{<< s.metric|escape >>}: paired contrasts by seed, Holm-corrected across the cells. << s.paired[0].test_path|escape >>.}\label{tab:paired-<< s.metric >>}\\
+\toprule
+contrast (within) & difference & 95\% CI & $p$ & \\
+\midrule
+\endhead
+<% for r in s.paired %>
+\makecell[l]{<< r.contrast|escape >>\\\footnotesize <% for f in factors if f in r and f not in r.contrast %><< f|escape >>=<< r[f]|level >> <% endfor %>} & << r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >> & <% if r.p is not none and r.p < alpha %>*<% endif %>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+<% endif %>
+
+<% if s.ols %>
+{\small
+\begin{longtable}{p{0.5\textwidth}rrr}
+\caption{\texttt{<< s.metric|escape >>}: OLS terms (<< s.ols[0].test_path|escape >>).}\label{tab:ols-<< s.metric >>}\\
+\toprule
+term & estimate & 95\% CI & $p$\\
+\midrule
+\endhead
+<% for r in s.ols %>
+\texttt{<< r.term|escape >>} in \texttt{<< r.formula|escape >>} & << r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+<% endif %>
+<% endfor %>
+
+<% if curves %>
+\section{Curves}
+<% for c in curves %>
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=\textwidth]{curve_<< c >>.png}
+\caption{\texttt{<< c|escape >>}, the mean over seeds per cell.}
+\label{fig:curve-<< loop.index >>}
+\end{figure}
+<% endfor %>
+<% endif %>
+
+\section{Configuration}
+The base configuration every run shares (frozen hash \texttt{<< frozen_hash >>}); factor levels are in \autoref{tab:summary-<< sections[0].metric if sections else '' >>}.
+{\footnotesize
+\begin{verbatim}
+<% for line in base_lines %>
+<< line >>
+<% endfor %>
+\end{verbatim}
+}
+Store: \texttt{<< store|display_path|escape >>}.
+\end{document}

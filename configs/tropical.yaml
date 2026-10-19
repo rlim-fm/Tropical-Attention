@@ -1,0 +1,75 @@
+# Tropical vs softmax attention on subset-selection tasks, seq2seq vs pointer head,
+# ERM vs Fishr with one environment per training sequence length.
+#
+#   python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4
+#   python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
+#   python -m expkit report --config configs/tropical.yaml --profile Knapsack --pdf
+#   python -m expkit status --config configs/tropical.yaml
+#
+# Each dataset is a campaign (campaigns/tropical/<dataset>/). Its task settings
+# come from the old jobs_to_do/jobs_to_do_train.csv.
+experiment: tropical
+entry: train:run
+global_seed: 0
+seeds: 5
+
+base:
+  # The task of the first campaign; each `dataset` level below replaces it.
+  task: {name: KnapsackDataset, value_range: [1, 10], target_range: [10, 20], weight_range: [1, 10],
+         adversarial_range: [10, 30], noise_prob: 0.0}
+  data:
+    train_lengths: [4, 5, 6, 7, 8]   # one Fishr environment each
+    ood_lengths: [12, 16]            # 16 = twice the longest training length, as before
+    n_per_length: 20000              # 100k training instances, as before
+    n_eval_per_length: 2000
+    curve_eval_limit: 256            # instances per length behind the per-epoch ood_len_f1 curve
+  model: {d_model: 64, n_heads: 2, num_layers: 1, dropout: 0.0, tropical_impl: legacy}
+  optim: {lr: 0.0001, epochs: 100, batch_size: 100, eval_batch_size: 256}   # batch_size per environment
+  fishr: {lambda: 1000.0, ema: 0.95, anneal_iters: 1500, reset_optimizer: true}   # DomainBed defaults
+
+factors:
+  model_type: [vanilla, adaptive, tropical]
+  head: [seq2seq, pointer]
+  objective: [erm, fishr]
+
+control: {model_type: vanilla}
+analysis:
+  paired:
+    - {factor: head, a: pointer, b: seq2seq}
+    - {factor: objective, a: fishr, b: erm}
+
+metrics:
+  ood_len_f1: {direction: max, bounds: [0, 1]}
+  ood_len_exact: {direction: max, bounds: [0, 1]}
+  ood_val_f1: {direction: max, bounds: [0, 1]}
+  id_f1: {direction: max, bounds: [0, 1]}
+  id_exact: {direction: max, bounds: [0, 1]}
+headline: ood_len_f1
+replay_curves: [train_loss, fishr_penalty, id_val_loss]
+
+axes:
+  dataset:
+    Knapsack: {}
+    SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null}}}
+    MaxSubsetSum: {base: {task: {name: MaxSubsetSumDataset, value_range: [-5, 5], target_range: null, weight_range: null}}}
+    FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset}}}
+    MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null}}}
+    Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null}}}
+    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000}}}
+    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000}}}
+    ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null}}}
+    ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]}}}
+    LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null}}}
+    # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before).
+    FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
+                           optim: {batch_size: 8, eval_batch_size: 8}}}
+    SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
+                 optim: {batch_size: 8, eval_batch_size: 8}}}
+
+profiles:
+  dry_run:
+    seeds: 2
+    base:
+      data: {train_lengths: [4, 5], ood_lengths: [8], n_per_length: 64, n_eval_per_length: 32, curve_eval_limit: 16}
+      optim: {epochs: 2, batch_size: 16}
+      fishr: {anneal_iters: 2}

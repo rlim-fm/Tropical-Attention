@@ -46,18 +46,20 @@ class VanillaAttention(nn.Module):
         self.value_linear = nn.Linear(d_model, d_model, bias=False)
         self.out = nn.Linear(d_model, d_model, bias=False)
 
+    def _heads(self, x: torch.Tensor, linear: nn.Module) -> torch.Tensor:
+        bsz, seq_len, _ = x.shape
+        return linear(x).view(bsz, seq_len, self.n_heads, self.d_k).permute(0,2,1,3)
+
+    def scores(self, x_q: torch.Tensor, x_k: torch.Tensor) -> torch.Tensor:
+        """Pre-aggregation attention scores [B,H,Sq,Sk] of queries x_q against keys x_k."""
+        Q = self._heads(x_q, self.query_linear)
+        K = self._heads(x_k, self.key_linear)
+        return torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, d_model = x.shape
-        
-        Q = self.query_linear(x)
-        K = self.key_linear(x)
-        V = self.value_linear(x)
-        
-        Q = Q.view(bsz, seq_len, self.n_heads, self.d_k).permute(0,2,1,3)
-        K = K.view(bsz, seq_len, self.n_heads, self.d_k).permute(0,2,1,3)
-        V = V.view(bsz, seq_len, self.n_heads, self.d_k).permute(0,2,1,3)
-        
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)  # [B,H,S,S]
+        V = self._heads(x, self.value_linear)
+        scores = self.scores(x, x)  # [B,H,S,S]
         
         # aggregator
         if self.aggregator == 'softmax':
@@ -273,54 +275,45 @@ class TropicalAttention(nn.Module):
         # Efficient broadcasting subtraction
         return x - self.lambda_param
 
+    def _project(self, x, linear, trop):
+        """log1p-ReLU, tropical normalization, split heads, tropical linear map: [B*H, S, D]."""
+        batch_size, seq_len, _ = x.size()
+        z = self.normalize_tropical(torch.log1p(F.relu(linear(x))))
+        z = z.reshape(batch_size, seq_len, self.n_heads, self.d_k).permute(0, 2, 1, 3)  # [B, H, S, D]
+        z = z.reshape(batch_size * self.n_heads, seq_len, self.d_k)  # merge batch and heads
+        return trop(z)
+
+    def _scores(self, q, k):
+        """Attention scores [B*H, Sq, Sk] from projected queries and keys."""
+        if self.use_tropical_metric:
+            diff = q.unsqueeze(2) - k.unsqueeze(1)  # [B, Sq, Sk, D]
+            # Tropical (Hilbert projective) distance; higher scores for closer queries and keys
+            return -(diff.max(dim=-1).values - diff.min(dim=-1).values)
+        sum_qk = q.unsqueeze(2) + k.unsqueeze(1)
+        if self.use_logsumexp:
+            return torch.logsumexp(sum_qk, dim=-1)
+        return sum_qk.max(dim=-1).values
+
+    def scores(self, x_q, x_k):
+        """Pre-aggregation attention scores [B,H,Sq,Sk] of queries x_q against keys x_k."""
+        q = self._project(x_q, self.query_linear, self.query_trop)
+        k = self._project(x_k, self.key_linear, self.key_trop)
+        s = self._scores(q, k)
+        return s.reshape(x_q.size(0), self.n_heads, x_q.size(1), x_k.size(1))
+
     def forward(self, x):
         batch_size, seq_len, _ = x.size()
-        
-        # Apply ReLU and log1p in a single pass before linear transformation
-        q = self.normalize_tropical(torch.log1p(F.relu(self.query_linear(x))))
-        k = self.normalize_tropical(torch.log1p(F.relu(self.key_linear(x))))
-        v = self.normalize_tropical(torch.log1p(F.relu(self.value_linear(x))))
-        
-        # Reshape and permute for multi-head attention
-        q = q.reshape(batch_size, seq_len, self.n_heads, self.d_k).permute(0, 2, 1, 3)  # [B, H, S, D]
-        k = k.reshape(batch_size, seq_len, self.n_heads, self.d_k).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, seq_len, self.n_heads, self.d_k).permute(0, 2, 1, 3)
-        
-        # Merge batch and heads for parallel computation
-        B = batch_size * self.n_heads
-        q = q.reshape(B, seq_len, self.d_k)  # [B, S, D]
-        k = k.reshape(B, seq_len, self.d_k)
-        v = v.reshape(B, seq_len, self.d_k)
+        q = self._project(x, self.query_linear, self.query_trop)
+        k = self._project(x, self.key_linear, self.key_trop)
+        v = self._project(x, self.value_linear, self.value_trop)
+        attn_scores = self._scores(q, k)  # [B, S, S]
 
-        # Multi-head attention tropical linear map
-        q =  self.query_trop(q)
-        k = self.key_trop(k)
-        v = self.value_trop(v)
-
-        if self.use_tropical_metric:
-            # Compute pairwise differences
-            diff = q.unsqueeze(2) - k.unsqueeze(1)  # [B, S, S, D]
-            # Calculate tropical distance
-            max_diff, _ = diff.max(dim=-1)  # [B, S, S]
-            min_diff, _ = diff.min(dim=-1)  # [B, S, S]
-            d_trop = max_diff - min_diff    # [B, S, S]
-            attn_scores = - d_trop           # Higher scores for closer queries and keys
-            
-            # Compute context using tropical multiplication and aggregation
-            sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, S, S, D]
+        # Compute context using tropical multiplication and aggregation
+        sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, S, S, D]
+        if self.use_tropical_metric or not self.use_logsumexp:
             context = sum_sv.max(dim=2).values  # [B, S, D]
         else:
-            # Compute sum of queries and keys
-            sum_qk = q.unsqueeze(2) + k.unsqueeze(1)  # [B, S, S, D]
-            
-            if self.use_logsumexp:
-                attn_scores = torch.logsumexp(sum_qk, dim=-1)  # [B, S, S]
-                # Compute context using logsumexp
-                context = torch.logsumexp(attn_scores.unsqueeze(-1) + v.unsqueeze(1), dim=2)  # [B, S, D]
-            else:
-                attn_scores = sum_qk.max(dim=-1).values  # [B, S, S]
-                # Compute context using max aggregation
-                context = (attn_scores.unsqueeze(-1) + v.unsqueeze(1)).max(dim=2).values  # [B, S, D]
+            context = torch.logsumexp(sum_sv, dim=2)
         
         # Reshape context back to [batch_size, seq_len, d_model]
         context = context.reshape(batch_size, self.n_heads, seq_len, self.d_k).permute(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
@@ -519,7 +512,7 @@ class TransformerEncoder(nn.Module):
         num_layers: int = 1,
         dropout: float = 0.0,
         tropical: bool = False,
-        tropical_attention_cls=None,
+        attention_factory=None,
         pre_norm: bool = False,
         aggregator: str = 'softmax',
     ):
@@ -527,13 +520,14 @@ class TransformerEncoder(nn.Module):
         self.pre_norm = pre_norm
         self.layers = nn.ModuleList()
         for _ in range(num_layers):
+            # A fresh attention module per layer (the factory), never one shared instance.
             block = TransformerBlock(
                 d_model=d_model,
                 n_heads=n_heads,
                 dim_ff=4*d_model,
                 dropout=dropout,
                 vanilla=not tropical,
-                tropical_attention=tropical_attention_cls,
+                tropical_attention=attention_factory() if tropical else None,
                 pre_norm=pre_norm,
                 aggregator=aggregator
             )
@@ -548,52 +542,110 @@ class TransformerEncoder(nn.Module):
             x = self.last_norm(x)
         return x
 
+class Seq2SeqHead(nn.Module):
+    """One logit per token from a linear map of its encoding: [B, S]."""
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.linear = nn.Linear(d_model, 1)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        return self.linear(h).squeeze(-1)
+
+
+class PointerHead(nn.Module):
+    """Pointer-network head: the logits over input positions *are* attention scores.
+
+    A query, the mean-pooled encoding projected, attends over the encoded tokens
+    with ``attention.scores`` (the same family as the encoder's attention). Each
+    head's scores are centred over the positions, and a learnable weight per head
+    plus a bias turns them into one logit per position: [B, S]. A sigmoid over
+    them selects a subset of the input.
+
+    The centring matters: tropical scores are distances (<= 0, of arbitrary
+    scale), and uncentred they start every logit far below 0, so the head
+    predicts the empty subset and never recovers.
+    """
+    def __init__(self, d_model: int, attention: nn.Module):
+        super().__init__()
+        self.query = nn.Linear(d_model, d_model)
+        self.attention = attention
+        n_heads = attention.n_heads
+        self.head_weight = nn.Parameter(torch.full((n_heads,), 1.0 / n_heads))
+        self.bias = nn.Parameter(torch.zeros(()))
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        q = self.query(h.mean(dim=1, keepdim=True))       # [B, 1, d_model]
+        s = self.attention.scores(q, h).squeeze(2)        # [B, H, S]
+        s = s - s.mean(dim=-1, keepdim=True)
+        return torch.einsum('bhs,h->bs', s, self.head_weight) + self.bias
+
+
 class SimpleTransformerModel(nn.Module):
+    """Encoder + a subset-selection head; ``forward`` returns one logit per token [B, S].
+
+    ``features`` and ``head`` are separate so that Fishr can take per-sample
+    gradients of the head alone.
+    """
     def __init__(
         self,
         input_dim: int = 1,
-        num_classes: int = 1,
         d_model: int = 32,
         n_heads: int = 2,
         num_layers: int = 1,
         dropout: float = 0.0,
         tropical: bool = False,
-        tropical_attention_cls=None,
-        classification: bool = False,
-        pool: bool = False,
+        attention_factory=None,
+        head: str = 'seq2seq',
         pre_norm: bool = False,
         aggregator: str = 'softmax',
     ):
         super().__init__()
         self.input_linear = nn.Linear(input_dim, d_model)
-        self.classification = classification
-
-        # Choose attention class
-        attn_cls = VanillaAttention
-        if tropical:
-            attn_cls = tropical_attention_cls
-
         self.encoder = TransformerEncoder(
             d_model=d_model,
             n_heads=n_heads,
             num_layers=num_layers,
             dropout=dropout,
             tropical=tropical,
-            tropical_attention_cls=attn_cls,
+            attention_factory=attention_factory,
             pre_norm=pre_norm,
             aggregator=aggregator,
-        )       
-        self.pool = pool
-        self.output_linear = nn.Linear(d_model, num_classes)
+        )
+        if head == 'seq2seq':
+            self.head = Seq2SeqHead(d_model)
+        elif head == 'pointer':
+            attention = attention_factory() if tropical else VanillaAttention(d_model, n_heads, aggregator)
+            self.head = PointerHead(d_model, attention)
+        else:
+            raise ValueError(f"Unknown head {head!r}")
+
+    def features(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(self.input_linear(x))  # [B, S, d_model]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.input_linear(x) # [B, S]
-        x = self.encoder(x) # [B, S, d_model]  
-        if self.pool:
-            pooled = x.mean(dim=1) # [B, d_model]
-            out = self.output_linear(pooled) # [B, 1]
-        else:
-            out = self.output_linear(x) # [B, S, 1] 
-        if not self.classification:
-            out = out.squeeze(-1) # [B, S] or [B]
-        return out
+        return self.head(self.features(x))  # [B, S]
+
+
+def build_model(model_type: str, head: str, input_dim: int, d_model: int = 32, n_heads: int = 2,
+                num_layers: int = 1, dropout: float = 0.0, tropical_impl: str = 'legacy',
+                device='cpu') -> SimpleTransformerModel:
+    """model_type: 'vanilla' (softmax), 'adaptive' (adaptive-temperature softmax) or 'tropical'.
+
+    tropical_impl: 'legacy' is the TropicalAttention in this file, which the
+    original experiments used; 'kernel' is TropicalAttention.py (the README's kernel).
+    """
+    tropical = model_type == 'tropical'
+    if model_type not in ('vanilla', 'adaptive', 'tropical'):
+        raise ValueError(f"Unknown model_type {model_type!r}")
+    if tropical_impl == 'legacy':
+        factory = lambda: TropicalAttention(d_model, n_heads, device)
+    elif tropical_impl == 'kernel':
+        from TropicalAttention import TropicalAttention as KernelTropicalAttention
+        factory = lambda: KernelTropicalAttention(d_model, n_heads, device)
+    else:
+        raise ValueError(f"Unknown tropical_impl {tropical_impl!r}")
+    return SimpleTransformerModel(
+        input_dim=input_dim, d_model=d_model, n_heads=n_heads, num_layers=num_layers,
+        dropout=dropout, tropical=tropical, attention_factory=factory, head=head,
+        aggregator='softmax' if model_type == 'vanilla' else 'adaptive',
+    ).to(device)

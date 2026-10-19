@@ -42,6 +42,27 @@ class TropicalAttention(nn.Module):
     def normalize_tropical(self, x):
         return x - self.lambda_param
 
+    def _project(self, x, trop):
+        """log1p-ReLU (and tropical normalization), split heads, tropical linear map: [B*H, S, D]."""
+        batch_size, seq_len, _ = x.size()
+        z = torch.log1p(F.relu(x))
+        if self.tropical_norm:
+            z = self.normalize_tropical(z)
+        z = z.reshape(batch_size, seq_len, self.n_heads, self.d_k).permute(0, 2, 1, 3)
+        z = z.reshape(batch_size * self.n_heads, seq_len, self.d_k)
+        return trop(z) if self.tropical_proj else z
+
+    def scores(self, x_q, x_k):
+        """Pre-aggregation attention scores [B,H,Sq,Sk] of queries x_q against keys x_k."""
+        q = self._project(x_q, self.query_trop if self.tropical_proj else None)
+        k = self._project(x_k, self.key_trop if self.tropical_proj else None)
+        diff = q.unsqueeze(2) - k.unsqueeze(1)  # [B*H, Sq, Sk, D]
+        if self.symmetric:
+            s = -(diff.max(dim=-1).values - diff.min(dim=-1).values)
+        else:
+            s = -(diff.sum(dim=-1) - q.size(-1) * diff.amin(dim=-1))
+        return s.reshape(x_q.size(0), self.n_heads, x_q.size(1), x_k.size(1))
+
     def forward(self, x):
         batch_size, seq_len, _ = x.size()
         

@@ -1,0 +1,10 @@
+# expkit's own dependencies. Your experiment code adds its own (torch, jax, ...).
+numpy
+scipy          # Dunnett, Wilcoxon, the t-tests
+pandas         # the results frame
+statsmodels    # Holm, the OLS terms
+pyyaml         # experiment configs and frozen files
+jinja2         # the report template
+matplotlib     # report figures
+pytest         # expkit/tests
+# optional: torch (the example experiment; seeding and worker threads use it if present)

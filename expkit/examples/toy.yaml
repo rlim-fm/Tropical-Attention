@@ -1,0 +1,49 @@
+# The toy experiment (examples/toy.py). Run it:
+#   python -m expkit run    --config expkit/examples/toy.yaml --profile dry_run --cpu-workers 4
+#   python -m expkit report --config expkit/examples/toy.yaml --profile dry_run --pdf
+experiment: toy
+entry: expkit.examples.toy:run
+global_seed: 0
+seeds: 5
+
+base:
+  data: {n: 256, noise: 0.05}
+  model: {width: 32, depth: 2}
+  optim: {epochs: 60}
+
+# Settings added after runs were stored: left out of the hash at these values,
+# so adding them did not orphan those runs.
+optional:
+  optim.weight_decay: 0.0
+
+factors:
+  lr: [0.001, 0.003, 0.01, 0.03]
+  batch_size: [16, 64]
+
+control: {lr: 0.001}
+metrics:
+  mse: {direction: min, bounds: [0, null]}
+  r2: {direction: max, bounds: [null, 1]}
+headline: mse
+replay_curves: [train_loss, eval_loss]
+
+analysis:
+  trend: {factor: lr, transform: log10}
+  ols:
+    - {formula: 'y ~ np.log10(lr) * np.log2(batch_size)', term: 'np.log10(lr):np.log2(batch_size)'}
+
+# Campaigns: one level per axis, crossed. The first levels are the default
+# campaign (campaigns/toy/clean/plain/).
+axes:
+  noise:
+    clean: {}
+    noisy: {base: {data: {noise: 0.3}}}
+  method:
+    plain: {}
+    wd: {base: {optim: {weight_decay: 0.0001}}}
+
+profiles:
+  dry_run:
+    seeds: 3
+    base: {data: {n: 128}, optim: {epochs: 8}}
+    factors: {lr: [0.001, 0.01], batch_size: [32]}

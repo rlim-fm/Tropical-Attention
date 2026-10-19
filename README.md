@@ -46,12 +46,30 @@ y, scores = attn(x)
 
 ---
 
-### Training a model from scratch
+### Running experiments (expkit)
+
+Every task is posed as **subset selection**: the target is a 0/1 mask over the
+input tokens (`dataloaders.py`, `classification=True`). Experiments run through
+[expkit](expkit/README.md) from one YAML, `configs/tropical.yaml`, whose grid is
+
+- `model_type`: `vanilla` (softmax), `adaptive` (adaptive-temperature softmax), `tropical`
+- `head`: `seq2seq` (a linear logit per token) or `pointer` (the logits are the attention
+  scores of a pooled query over the input positions)
+- `objective`: `erm` or `fishr` (Fishr, with one environment per training sequence length)
+
+Each dataset is a campaign. Metrics are token F1 and exact-subset match in
+distribution, at longer lengths (`ood_len_*`, the headline) and at doubled values (`ood_val_*`).
+
 ```bash
-python experiment.py --job_file jobs_to_do_train --job_id 0 
+pip install -r requirements.txt
+python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4   # smoke test
+python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
+python -m expkit report --config configs/tropical.yaml --profile Knapsack --pdf
+python -m expkit status --config configs/tropical.yaml
+python -m pytest tests expkit/tests
 ```
-`--job_id` selects the row in `jobs_to_do_train.csv`.
-The script logs training progress to outputs/<timestamp>/.
+
+The entry is `train.py:run`; tasks and length environments are in `tasks.py`, and Fishr is in `fishr.py`.
 
 ---
 
