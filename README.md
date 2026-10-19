@@ -50,26 +50,113 @@ y, scores = attn(x)
 
 Every task is posed as **subset selection**: the target is a 0/1 mask over the
 input tokens (`dataloaders.py`, `classification=True`). Experiments run through
-[expkit](expkit/README.md) from one YAML, `configs/tropical.yaml`, whose grid is
+[expkit](expkit/README.md) from one YAML, [`configs/tropical.yaml`](configs/tropical.yaml).
+Its grid is model × head × objective, with 5 paired seeds per cell:
 
-- `model_type`: `vanilla` (softmax), `adaptive` (adaptive-temperature softmax), `tropical`
-- `head`: `seq2seq` (a linear logit per token) or `pointer` (the logits are the attention
-  scores of a pooled query over the input positions)
-- `objective`: `erm` or `fishr` (Fishr, with one environment per training sequence length)
+| factor | levels |
+|---|---|
+| `model_type` | `vanilla` (softmax), `adaptive` (adaptive-temperature softmax), `tropical` |
+| `head` | `seq2seq` (a linear logit per token), `pointer` (the logits are the attention scores of a pooled query over the input positions) |
+| `objective` | `erm`, `fishr` (Fishr, with one environment per training sequence length) |
 
-Each dataset is a campaign. Metrics are token F1 and exact-subset match in
-distribution, at longer lengths (`ood_len_*`, the headline) and at doubled values (`ood_val_*`).
+Each dataset is a **campaign**, with its own directory `campaigns/tropical/<dataset>/`.
+The metrics are token F1 and exact-subset match:
+- in distribution (`id_*`)
+- at longer lengths (`ood_len_*`, the headline)
+- at larger values (`ood_val_*`)
+
+The code is split across:
+- `train.py`: the expkit entry
+- `tasks.py`: the tasks and per-length environments
+- `models.py`: the attention modules and heads
+- `fishr.py`: the Fishr penalty
+
+#### Workflow
 
 ```bash
-pip install -r requirements.txt
-python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4   # smoke test
-python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
-python -m expkit report --config configs/tropical.yaml --profile Knapsack --pdf
-python -m expkit status --config configs/tropical.yaml
-python -m pytest tests expkit/tests
+# 0. Setup
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 1. Smoke test (minutes on a laptop CPU): tests, then the whole pipeline on a tiny profile
+.venv/bin/python -m pytest tests expkit/tests
+LOCAL=1 PROFILE=dry_run scripts/tune_all.sh
+PROFILE=dry_run scripts/approve_all.sh
+LOCAL=1 PROFILE=dry_run scripts/run_all.sh
+
+# 2. Tune: one Slurm job per campaign. Use --plan first to see the sbatch lines.
+scripts/tune_all.sh --plan
+scripts/tune_all.sh
+
+# 3. Review: every campaign shows UNAPPROVED once its search is done.
+expkit/launch.sh status --config configs/tropical.yaml
+#    Read campaigns/tropical/<dataset>/tune/tune.csv (one row per candidate), then approve:
+scripts/approve_all.sh                 # shows each table and asks once
+
+# 4. Run the grid of every approved campaign, then a report job for each
+scripts/run_all.sh --plan
+scripts/run_all.sh
+
+# 5. Results: campaigns/tropical/<dataset>/report/ (report.tex, stats_*.csv, figures)
+expkit/launch.sh report --config configs/tropical.yaml --profile Knapsack --pdf   # rebuild one
 ```
 
-The entry is `train.py:run`; tasks and length environments are in `tasks.py`, and Fishr is in `fishr.py`.
+`CAMPAIGNS=Knapsack,SCC` limits any script to some campaigns. Re-running a script
+only does what is missing: stored runs are never retrained. `run` refuses a
+campaign whose `frozen.yaml` is missing or unapproved (`require_frozen: true`).
+
+**What tune does.** The paper does no hyperparameter search. Every kernel shares
+the fixed setup in `base`: 1 layer, 2 heads, width 64, lr 1e-4 (App. F and
+Table 5). The only new hyperparameter is Fishr's λ. As in Fishr/DomainBed, it
+is selected by **training-domain validation**:
+- the score is the best ID-validation loss, `id_val_loss`
+- the search runs on separate seeds (`tune.global_seed`) at a reduced budget
+- one λ is chosen per campaign and shared by every cell
+
+The test and OOD metrics never enter selection (`expkit tune` refuses them).
+The search space is in the `tune:` block of the YAML.
+
+**After a code fix** that changes results, the stored runs keep their keys, so
+clear them and run again:
+```bash
+expkit/launch.sh clear  --config configs/tropical.yaml --profile Knapsack --only head=pointer --yes
+expkit/launch.sh replay --config configs/tropical.yaml --profile Knapsack --only seed=0   # bit-identical check
+```
+
+**Commit** `campaigns/**/results/{runs,configs,registry}.jsonl`, `frozen.yaml` and
+`tune/tune.csv`, which hold the record of what ran and why. Curves and
+artifacts are gitignored.
+
+#### Compute
+
+expkit parallelizes **across runs, never within one**. Each (cell, seed) is an
+independent job in a process pool. There is no data-parallel or multi-GPU
+training of a single run, which these models (50k–77k parameters) do not need.
+
+- `--gpus 0,1 --per-gpu 4` starts 8 worker processes, each pinned to one GPU,
+  with the allocated CPUs split between them.
+- `--cpu-workers N` starts N CPU processes, with the GPUs hidden from them.
+- Apple-silicon MPS is not supported: a slot is `cpu` or `cuda:i`.
+- On Slurm, each script submits **one single-node job per campaign**:
+  - 13 campaigns means 13 jobs in parallel.
+  - Each job runs its campaign's runs `PER_GPU` at a time on `GPUS` GPUs.
+  - `--dependency=singleton` stops two jobs writing one campaign.
+  - Each report job waits on its own campaign's job.
+- A single run leaves a GPU mostly idle, so pack several per GPU (`PER_GPU=4`–`8`).
+- The graph tasks (FloydWarshall, SCC) are the memory-heavy ones. L nodes are
+  L² tokens, and tropical attention holds a B·H·S²·d_k tensor, so their batches
+  are small (`batch_size: 8`, `eval_batch_size: 8`).
+
+| variable | default | meaning |
+|---|---|---|
+| `GPUS` | 1 | GPUs per Slurm job (locally: GPUs to use; 0 means CPU) |
+| `PER_GPU` | 4 | concurrent runs per GPU |
+| `CORES` | 8 | CPU cores per Slurm job |
+| `CPU_WORKERS` | 4 | concurrent CPU runs when there is no GPU |
+| `LOCAL` | unset | `1`: run here, campaign after campaign, instead of submitting |
+| `CAMPAIGNS` / `PROFILE` | all | which campaigns, or one profile such as `dry_run` |
+| `EXPKIT_PARTITION` | unset | Slurm partition(s), e.g. `gpu` |
+| `EXPKIT_SBATCH_ARGS` | unset | extra sbatch flags, e.g. `--time=12:00:00 --account=X` |
+| `EXPKIT_GB_PER_CORE` | unset | `--mem` = cores × this |
 
 ---
 

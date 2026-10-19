@@ -2,13 +2,16 @@
 
     expkit run      --config X [--profile P] [--cpu-workers N | --gpus 0,1 --per-gpu 2]
                     [--only lr=0.01,seed=0] [--keys K,...] [--force] [--plan]
+    expkit tune     --config X [--profile P] [--cpu-workers N | --gpus ...] [--plan]
+                    # grid search per the `tune:` block -> frozen.yaml, unapproved
     expkit status   --config X                       # every campaign: frozen? stored? failed?
     expkit freeze   --config X [--set k=v ...] [--evidence PATH] | --from-default
     expkit approve  --config X [--set k=v ...]
     expkit report   --config X [--pdf]
     expkit replay   --config X --keys K | --only ... [--tolerance 0]   # bit-identical check
     expkit clear    --config X [--only ...] [--yes]
-    expkit submit   --config X [--campaigns a/b,c/d] --cores 32 [--report] [--plan]   # Slurm
+    expkit submit   --config X [--stage tune|run] [--campaigns a/b,c/d] --cores 32
+                    [--gpus 1 --per-gpu 4] [--report] [--plan]               # Slurm
 
 Every command takes ``--config``, ``--profile`` and ``--root``, and resolves the
 same campaign directory from them (``expkit.campaign``). Pass the same
@@ -67,15 +70,37 @@ def cmd_run(args, cfg):
         return 0
     if not todo:
         return 0
+    return 1 if _launch(args, todo, store.root)['failed'] else 0
+
+
+def _launch(args, todo, store_root):
     gpus = [int(g) for g in args.gpus.split(',')] if args.gpus else None
     slots = device_slots(gpus, args.per_gpu, args.cpu_workers)
     threads = export_worker_env(slots)
     print(f'-- {len(todo)} runs on {sorted(set(slots))} ({len(slots)} concurrent, '
           f'{threads} thread(s) each)')
-    out = execute(todo, store.root, slots, retries=args.retries, threads=threads)
+    out = execute(todo, store_root, slots, retries=args.retries, threads=threads)
     print(f'\ndone: {len(out["ok"])} ok, {len(out["failed"])} failed'
           + (f' ({", ".join(out["failed"])}; tracebacks in registry.jsonl)' if out['failed'] else ''))
-    return 1 if out['failed'] else 0
+    return out
+
+
+def cmd_tune(args, cfg):
+    from expkit import tune
+    groups = tune.candidates(cfg)
+    store = Store(tune.store_dir(cfg, args.root))
+    specs = [s for _, _, _, group in groups for s in group]
+    todo = store.pending(specs)
+    print(f'== tune {cfg.experiment} [{cfg.campaign}]: {len(groups)} candidates, '
+          f'{len(specs)} runs, {len(specs) - len(todo)} stored, {len(todo)} to run  ({store.root})')
+    if args.plan:
+        for values, _, _, group in groups:
+            missing = len(store.pending(group))
+            print(f'   {cell_label(values)}: {len(group) - missing}/{len(group)} stored')
+        return 0
+    if todo and _launch(args, todo, store.root)['failed']:
+        return 1
+    return 0 if tune.finalize(cfg, args.root) else 1
 
 
 def _status_line(cfg, root=None):
@@ -84,12 +109,18 @@ def _status_line(cfg, root=None):
              else 'UNAPPROVED')
     try:
         specs, _ = build_specs(cfg, root)
+        store = Store(campaign.store_dir(cfg, root))
+        missing = len(store.pending(specs))
+        line = (f'{cfg.campaign:28s} {state:15s} {len(specs) - missing:6d}/{len(specs):<6d} '
+                f'stored  {len(store.failures()):4d} failed')
     except SystemExit:
-        return f'{cfg.campaign:28s} {state}'
-    store = Store(campaign.store_dir(cfg, root))
-    missing = len(store.pending(specs))
-    return (f'{cfg.campaign:28s} {state:15s} {len(specs) - missing:6d}/{len(specs):<6d} stored  '
-            f'{len(store.failures()):4d} failed')
+        line = f'{cfg.campaign:28s} {state:15s} {"":>13s} stored  {"":>4s} failed'
+    if cfg.extra.get('tune'):
+        from expkit import tune
+        tuning = tune.all_specs(cfg)
+        done = len(tuning) - len(Store(tune.store_dir(cfg, root)).pending(tuning))
+        line += f'   tune {done}/{len(tuning)}'
+    return line
 
 
 def cmd_status(args, cfg):
@@ -191,40 +222,49 @@ def cmd_submit(args, cfg):
             raise SystemExit(f'unknown campaign(s) {unknown}; there are {names}')
         names = wanted
     config_arg = os.path.relpath(cfg.path, slurm.REPO)
-    ids = []
+    ids = {}                  # campaign -> its job ids, so each report waits on its own
+    tuning = args.stage == 'tune'
     for name in names:
         c = load_config(cfg.path, None if name == 'default' else name)
-        job = slurm.job_name(c.experiment, c.campaign)
+        job = slurm.job_name(c.experiment, c.campaign + ('-tune' if tuning else ''))
         try:
-            specs, _ = build_specs(c)
+            if tuning:
+                from expkit import tune
+                missing = len(Store(tune.store_dir(c)).pending(tune.all_specs(c)))
+            else:
+                specs, _ = build_specs(c)
+                missing = len(Store(campaign.store_dir(c)).pending(specs))
         except SystemExit as exc:
             print(f'skip {c.campaign}: {exc}')
             continue
-        missing = len(Store(campaign.store_dir(c)).pending(specs))
         if not missing:
-            print(f'skip {c.campaign}: every run is stored')
+            if tuning and not args.plan:
+                print(f'{c.campaign}: every tuning run is stored; freezing from them')
+                tune.finalize(c)
+            else:
+                print(f'skip {c.campaign}: every run is stored')
             continue
         running = slurm.queued(job)
         if running:
             print(f'skip {c.campaign}: {job} is already queued ({", ".join(running)})')
-            ids.extend(running)
+            ids[name] = running
             continue
         devices = (['--gpus', ','.join(str(i) for i in range(args.gpus)),
                     '--per-gpu', str(args.per_gpu)] if args.gpus
                    else ['--cpu-workers', str(args.cores)])
-        run_args = ['run', '--config', config_arg, *devices,
+        run_args = [args.stage, '--config', config_arg, *devices,
                     *(['--profile', name] if name != 'default' else [])]
         jid = slurm.submit(job, args.cores, run_args, partition=args.partition,
                            gpus=args.gpus, plan=args.plan)
         if jid:
-            ids.append(jid)
-    if args.report and ids:
-        for name in names:
+            ids[name] = [jid]
+    if args.report and not tuning:
+        for name, jobs in ids.items():
             report_args = ['report', '--config', config_arg, '--pdf']
             if name != 'default':
                 report_args += ['--profile', name]
             slurm.submit(slurm.job_name(cfg.experiment, f'{name}-report'), 1, report_args,
-                         dependency='afterany:' + ':'.join(str(i) for i in ids),
+                         dependency='afterany:' + ':'.join(str(i) for i in jobs),
                          partition=args.partition, plan=args.plan)
     return 0
 
@@ -249,6 +289,13 @@ def parser():
     s.add_argument('--keys', default=None)
     s.add_argument('--force', action='store_true', help='re-run stored runs')
     s.add_argument('--plan', action='store_true', help='list what would run; train nothing')
+
+    s = add('tune', cmd_tune, "grid-search the `tune:` block; freeze the best, unapproved")
+    s.add_argument('--cpu-workers', type=int, default=1)
+    s.add_argument('--gpus', default=None, help='comma list of GPU indices')
+    s.add_argument('--per-gpu', type=int, default=1)
+    s.add_argument('--retries', type=int, default=2)
+    s.add_argument('--plan', action='store_true', help='list the candidates; train nothing')
 
     add('status', cmd_status, 'every campaign: frozen state, runs stored, failures')
 
@@ -280,6 +327,8 @@ def parser():
     s.add_argument('--yes', action='store_true')
 
     s = add('submit', cmd_submit, 'one Slurm job per campaign with runs missing')
+    s.add_argument('--stage', choices=('run', 'tune'), default='run',
+                   help='submit the grid (run) or the search (tune)')
     s.add_argument('--campaigns', default=None, help='comma list (default: all)')
     s.add_argument('--cores', type=int, default=8)
     s.add_argument('--gpus', type=int, default=None, help='GPUs per job')

@@ -1,12 +1,12 @@
 # expkit
 
-The infrastructure behind the ClusterGAR harness (extracted at `3dfd0d89`), with
-nothing about any particular experiment. It runs a factorial grid of cells ×
-paired seeds in parallel worker processes, into an append-only store. Re-running
-is a no-op, and a changed config becomes a new set of runs. An approval gate
-sits before a grid spends its budget. Runs are reproduced by replay, never
-checkpointed. You get seed-paired statistics, a LaTeX report, and one Slurm job
-per campaign.
+Experiment infrastructure with nothing about any particular experiment. It
+runs a factorial grid of cells × paired seeds in parallel worker processes, into
+an append-only store. Re-running is a no-op, and a changed config becomes a new
+set of runs. A grid search over hyperparameters (`tune`) proposes a frozen
+config, and an approval gate sits before the grid spends its budget. Runs are
+reproduced by replay, never checkpointed. You get seed-paired statistics, a
+LaTeX report, and one Slurm job per campaign.
 
 You write one function (the *entry*) and one YAML file. expkit does the rest.
 
@@ -88,12 +88,13 @@ profiles: {dry_run: {seeds: 2, base: {optim: {epochs: 1}}}}
 |---|---|
 | `run` | trains every missing run (`--cpu-workers N`, or `--gpus 0,1 --per-gpu 2`; `--only lr=1e-3,seed=0`; `--force`; `--plan`) |
 | `status` | for every campaign: frozen and approved?, runs stored of total, failures |
+| `tune [--plan]` | grid-searches the YAML's `tune:` block on its own seeds and store, writes `tune/tune.csv`, and freezes the best candidate, unapproved (see `expkit/tune.py`) |
 | `freeze --set k=v` / `approve` | writes `frozen.yaml` with tuned values, unapproved; `approve` after you have read the evidence |
 | `freeze --profile P --from-default` | derives a campaign from the approved default, and refuses if the profile moves a tuned value |
 | `report [--pdf]` | `stats_*.csv`, figures, `report.tex` |
 | `replay --keys K` | retrains stored runs and fails unless their curves match exactly (`--tolerance`) |
 | `clear [--only ...] --yes` | removes runs so they retrain after a fix that leaves their keys unchanged |
-| `submit --cores 32 [--report] [--plan]` | one `sbatch` job per campaign with runs missing |
+| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4] [--report] [--plan]` | one `sbatch` job per campaign with runs missing; `--report` adds a report job per campaign that waits on that campaign's job |
 
 Pass the same `--profile` to every command. It selects the campaign directory
 `campaigns/<experiment>/<campaign>/` (`frozen.yaml`, `results/`, `report/`).
@@ -127,9 +128,8 @@ Pass the same `--profile` to every command. It selects the campaign directory
 and `EXPKIT_SBATCH_ARGS` (e.g. `--time=12:00:00`). Run `--plan` first to print
 the `sbatch` lines.
 
-## Not included (port from ClusterGAR if you need it)
+## Not included
 
-Stage-1 tuning (LR range test, batch-size law, per-cell grid rates), the k-NN
-sampler and SNIS, the trainer, the grand and sweep reports, the per-run fit
-pictures, and the animated Stage-4 diagnostics. `cache.ResultCache` is the piece
-a tuning search builds on.
+Search strategies beyond a grid (random, Bayesian or successive-halving
+searches), learning-rate range tests, a trainer, and checkpointing.
+`cache.ResultCache` is the piece a custom search builds on.

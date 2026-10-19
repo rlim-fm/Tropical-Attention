@@ -164,6 +164,7 @@ def run(ctx: RunContext) -> RunResult:
         'ood_val_f1': val_m['f1'], 'ood_val_exact': val_m['exact'],
         'fishr_penalty_final': curves['fishr_penalty'][-1],
         'best_epoch': best_epoch,
+        'id_val_loss': best_val,             # the model-selection criterion; what `tune` selects on
     }
     for L, (f1, exact) in ood_per_length.items():
         metrics[f'ood_len_f1_L{L}'] = f1

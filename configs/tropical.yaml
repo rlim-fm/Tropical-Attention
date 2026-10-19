@@ -46,6 +46,20 @@ metrics:
   id_exact: {direction: max, bounds: [0, 1]}
 headline: ood_len_f1
 replay_curves: [train_loss, fishr_penalty, id_val_loss]
+require_frozen: true     # no campaign runs before its tuning is frozen and approved
+
+# `expkit tune` (scripts/tune_all.sh). The paper does no hyperparameter search:
+# every kernel shares the fixed setup in `base` (Hashemi et al. 2025, App. F and
+# Table 5). Only Fishr's own knob is searched, selected by training-domain
+# validation as in Fishr/DomainBed, on seeds the grid never uses. One value per
+# campaign, shared by every cell.
+tune:
+  global_seed: 1000
+  seeds: 2
+  only: {objective: fishr}
+  base: {optim: {epochs: 20}}      # reduced budget for the search only
+  space: {fishr.lambda: [10.0, 100.0, 1000.0, 10000.0]}
+  select: {metric: id_val_loss, direction: min}
 
 axes:
   dataset:
@@ -69,7 +83,10 @@ axes:
 profiles:
   dry_run:
     seeds: 2
+    require_frozen: false  # the smoke test runs without tuning
     base:
       data: {train_lengths: [4, 5], ood_lengths: [8], n_per_length: 64, n_eval_per_length: 32, curve_eval_limit: 16}
       optim: {epochs: 2, batch_size: 16}
       fishr: {anneal_iters: 2}
+    tune: {seeds: 1, only: {objective: fishr, head: seq2seq}, base: {optim: {epochs: 1}},
+           space: {fishr.lambda: [10.0, 1000.0]}}
