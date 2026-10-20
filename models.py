@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from tropical_gemm_backend import maxplus_matmul
+
 ################################################################################
 ## 2. MODEL DEFINITIONS (Vanilla & Tropical Transformers)
 ################################################################################
@@ -239,10 +241,7 @@ class TropicalLinear(nn.Module):
         #self.b = nn.Parameter(torch.randn(output_dim))
     
     def forward(self, x):
-        x_expanded = x.unsqueeze(-2)
-        W_expanded = self.W.unsqueeze(0)
-        Wx = x_expanded + W_expanded  
-        y, _ = torch.max(Wx, dim=-1)
+        y = maxplus_matmul(x, self.W.transpose(0, 1))
         #y = y + self.b  # (..., output_dim)
         return y
     
@@ -309,10 +308,10 @@ class TropicalAttention(nn.Module):
         attn_scores = self._scores(q, k)  # [B, S, S]
 
         # Compute context using tropical multiplication and aggregation
-        sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, S, S, D]
         if self.use_tropical_metric or not self.use_logsumexp:
-            context = sum_sv.max(dim=2).values  # [B, S, D]
+            context = maxplus_matmul(attn_scores, v)  # [B, S, D]
         else:
+            sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, S, S, D]
             context = torch.logsumexp(sum_sv, dim=2)
         
         # Reshape context back to [batch_size, seq_len, d_model]
@@ -432,10 +431,10 @@ class TropicalAttention_(nn.Module):
             )
 
         # 7) Aggregate values: context[i] = max_j(scores[i,j] + v[j])
-        sum_sv = scores.unsqueeze(-1) + v.unsqueeze(2)  # (B,H,S_q,S_k,d_k)
         if self.max_plus:
-            context = sum_sv.max(dim=3).values  # (B,H,S_q,d_k)
+            context = maxplus_matmul(scores, v)  # (B,H,S_q,d_k)
         else:
+            sum_sv = scores.unsqueeze(-1) + v.unsqueeze(2)  # (B,H,S_q,S_k,d_k)
             context = sum_sv.min(dim=3).values
 
         # 8) Merge heads and final linear
