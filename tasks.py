@@ -37,7 +37,7 @@ TASKS = {
 RANGE_KEYS = ('value_range', 'target_range', 'weight_range', 'adversarial_range')
 
 # Split ids, folded into the data seed so every split is its own draw.
-SPLITS = {'train': 0, 'id_val': 1, 'id_test': 2, 'ood_len': 3, 'ood_val': 4}
+SPLITS = {'train': 0, 'id_val': 1, 'id_test': 2, 'ood_len': 3, 'ood_val': 4, 'ood_noise': 5}
 
 
 def tokens_per_length(name, length):
@@ -48,25 +48,49 @@ def _as_range(value):
     return tuple(value) if isinstance(value, (list, tuple)) else value
 
 
-def ood_value_range(name, value_range):
-    """The value range of the value-shift test: doubled, as in the original evaluation."""
+def ood_value_range(name, value_range, override=None):
+    """The value range of the value-shift test.
+
+    ``override`` is the campaign's ``data.ood_value_range`` (Hashemi et al. 2025,
+    Table 5, "OOD Value Range"). Tasks the table leaves out fall back to doubling
+    the training range, as the original evaluation did.
+    """
+    if override is not None:
+        return _as_range(override)
     if name == 'SCCDataset':
         return 0.6
     lo, hi = value_range
     return (lo * 2 if lo not in (0, 1) else lo, hi * 2)
 
 
+def ood_noise_settings(data):
+    """Dataset overrides of the perturbative-noise test (Hashemi et al. 2025, App. F).
+
+    Each input is perturbed with probability ``data.ood_noise_prob`` (0.5 in the
+    paper) by a random draw from ``data.ood_noise_range`` (Table 5, "Perturbative
+    Noise Range"); a null range keeps the task's own ``adversarial_range``.
+    """
+    out = {'noise_prob': float(data.get('ood_noise_prob', 0.5))}
+    if data.get('ood_noise_range') is not None:
+        out['adversarial_range'] = _as_range(data['ood_noise_range'])
+    return out
+
+
 def split_seed(data_seed, split, length):
     return (int(data_seed) + 7919 * SPLITS[split] + 104729 * int(length)) % 2 ** 32
 
 
-def make_env(task, length, n_samples, seed, value_range=None):
-    """One environment: ``(X, Y)`` with X (N, S, d) float and Y (N, S) float 0/1."""
+def make_env(task, length, n_samples, seed, value_range=None, **overrides):
+    """One environment: ``(X, Y)`` with X (N, S, d) float and Y (N, S) float 0/1.
+
+    ``overrides`` replace task settings for this split only (e.g. ``noise_prob``).
+    """
     cls, _ = TASKS[task['name']]
     # A null setting (a campaign clearing the default task's) means the dataset's own default.
     kwargs = {k: _as_range(v) for k, v in task.items() if k != 'name' and v is not None}
     if value_range is not None:
         kwargs['value_range'] = value_range
+    kwargs.update(overrides)
     ds = cls(n_samples=int(n_samples), length_range=(int(length), int(length)),
              classification=True, seed=int(seed), **kwargs)
     xs, ys = zip(*ds.data)
@@ -79,7 +103,8 @@ def make_env(task, length, n_samples, seed, value_range=None):
     return X, Y
 
 
-def make_envs(task, lengths, n_samples, data_seed, split, value_range=None):
+def make_envs(task, lengths, n_samples, data_seed, split, value_range=None, **overrides):
     """``{length: (X, Y)}`` for one split."""
-    return {int(L): make_env(task, L, n_samples, split_seed(data_seed, split, L), value_range)
+    return {int(L): make_env(task, L, n_samples, split_seed(data_seed, split, L), value_range,
+                             **overrides)
             for L in lengths}

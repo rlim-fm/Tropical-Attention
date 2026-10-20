@@ -31,7 +31,7 @@ from torch.func import functional_call, stack_module_state, vmap
 from expkit.api import RunContext, RunResult
 from fishr import FishrPenalty, gradient_variance, per_sample_head_grads
 from models import build_model
-from tasks import make_envs, ood_value_range
+from tasks import make_envs, ood_noise_settings, ood_value_range
 
 
 def _optimizer(model, lr):
@@ -92,8 +92,11 @@ def _splits(ctx):
         'id_val': make_envs(task, train_lengths, n_eval, seed, 'id_val'),
         'id_test': make_envs(task, train_lengths, n_eval, seed, 'id_test'),
         'ood_len': make_envs(task, ood_lengths, n_eval, seed, 'ood_len'),
+        # Value and noise OOD at the training lengths (Hashemi et al. 2025, Sec. 4 and App. F).
         'ood_val': make_envs(task, train_lengths, n_eval, seed, 'ood_val',
-                             value_range=ood_value_range(task['name'], task.get('value_range'))),
+                             value_range=ood_value_range(task['name'], task.get('value_range'),
+                                                         data.get('ood_value_range'))),
+        'ood_noise': make_envs(task, train_lengths, n_eval, seed, 'ood_noise', **ood_noise_settings(data)),
     }
 
 
@@ -106,11 +109,12 @@ def _model(ctx, input_dim):
                        tropical_impl=model_cfg.get('tropical_impl', 'legacy'), device=ctx.device)
 
 
-def _metrics(id_m, ood_m, ood_per_length, val_m, curves, best_epoch, best_val):
+def _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, best_val):
     metrics = {
         'id_f1': id_m['f1'], 'id_exact': id_m['exact'],
         'ood_len_f1': ood_m['f1'], 'ood_len_exact': ood_m['exact'],
         'ood_val_f1': val_m['f1'], 'ood_val_exact': val_m['exact'],
+        'ood_noise_f1': noise_m['f1'], 'ood_noise_exact': noise_m['exact'],
         'fishr_penalty_final': curves['fishr_penalty'][-1],
         'best_epoch': best_epoch,
         'id_val_loss': best_val,             # the model-selection criterion; what `tune` selects on
@@ -127,7 +131,8 @@ def run(ctx: RunContext) -> RunResult:
 
     # ---- data: one environment per training length ----
     splits = _splits(ctx)
-    id_val, id_test, ood_len, ood_val = (splits[k] for k in ('id_val', 'id_test', 'ood_len', 'ood_val'))
+    id_val, id_test, ood_len, ood_val, ood_noise = (
+        splits[k] for k in ('id_val', 'id_test', 'ood_len', 'ood_val', 'ood_noise'))
     train = {L: (X.to(device), Y.to(device)) for L, (X, Y) in splits['train'].items()}
     input_dim = next(iter(train.values()))[0].size(-1)
 
@@ -192,13 +197,14 @@ def run(ctx: RunContext) -> RunResult:
             best_state = copy.deepcopy(model.state_dict())
         opt.train()
 
-    # ---- final metrics at the selected epoch ----
+    # ---- final metrics at the selected epoch (the paper, App. F, reports the final one) ----
     opt.eval()
     model.load_state_dict(best_state)
     id_m = evaluate(model, id_test, eval_bs, device)[0]
     ood_m, ood_per_length = evaluate(model, ood_len, eval_bs, device)
     val_m = evaluate(model, ood_val, eval_bs, device)[0]
-    metrics = _metrics(id_m, ood_m, ood_per_length, val_m, curves, best_epoch, best_val)
+    noise_m = evaluate(model, ood_noise, eval_bs, device)[0]
+    metrics = _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, best_val)
     return RunResult(metrics=metrics, curves=curves, steps=step)
 
 
@@ -279,8 +285,8 @@ def run_group(ctxs):
 
     splits = [_splits(ctx) for ctx in ctxs]
     train = _stack_envs(splits, 'train', device)
-    id_val, id_test, ood_len, ood_val = (_stack_envs(splits, k, device)
-                                         for k in ('id_val', 'id_test', 'ood_len', 'ood_val'))
+    id_val, id_test, ood_len, ood_val, ood_noise = (
+        _stack_envs(splits, k, device) for k in ('id_val', 'id_test', 'ood_len', 'ood_val', 'ood_noise'))
     input_dim = next(iter(train.values()))[0].size(-1)
 
     models = [_model(ctx, input_dim) for ctx in ctxs]
@@ -406,13 +412,15 @@ def run_group(ctxs):
     id_ms = evaluate_group(forward, state, id_test, eval_bs)
     ood_ms = evaluate_group(forward, state, ood_len, eval_bs)
     val_ms = evaluate_group(forward, state, ood_val, eval_bs)
+    noise_ms = evaluate_group(forward, state, ood_noise, eval_bs)
     for i in range(S):
         if results[i] is not None:
             continue
         if best_epoch[i] < 0:
             results[i] = RuntimeError('no epoch had a finite validation loss to select')
             continue
-        metrics = _metrics(id_ms[i][0], ood_ms[i][0], ood_ms[i][1], val_ms[i][0], curves[i],
+        metrics = _metrics(id_ms[i][0], ood_ms[i][0], ood_ms[i][1], val_ms[i][0], noise_ms[i][0],
+                           curves[i],
                            best_epoch[i], best_val[i])
         results[i] = RunResult(metrics=metrics, curves=curves[i], steps=step)
     return results
