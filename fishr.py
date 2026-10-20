@@ -17,13 +17,23 @@ import torch.nn.functional as F
 from torch.func import functional_call, grad, vmap
 
 
-def per_sample_head_grads(head, feats, y):
-    """[B, P]: the gradient of each sample's mean token BCE w.r.t. the head's parameters."""
+def per_sample_head_grads(head, feats, y, state=None):
+    """[B, P]: the gradient of each sample's mean token BCE w.r.t. the head's parameters.
+
+    ``state`` ({name: tensor}, the head's parameters and buffers) stands in for
+    the head's own tensors, as when one seed of a stacked ensemble is being
+    trained under ``vmap`` (``train.run_group``); ``head`` then only supplies
+    the structure.
+    """
     names = [n for n, p in head.named_parameters() if p.requires_grad]
-    params = {n: p for n, p in head.named_parameters() if p.requires_grad}
+    if state is None:
+        params, fixed = {n: p for n, p in head.named_parameters() if p.requires_grad}, {}
+    else:
+        params = {n: state[n] for n in names}
+        fixed = {n: v for n, v in state.items() if n not in params}
 
     def loss_one(p, f, t):
-        logits = functional_call(head, p, (f.unsqueeze(0),)).squeeze(0)
+        logits = functional_call(head, {**p, **fixed} if fixed else p, (f.unsqueeze(0),)).squeeze(0)
         return F.binary_cross_entropy_with_logits(logits, t)
 
     g = vmap(grad(loss_one), in_dims=(None, 0, 0))(params, feats, y)
@@ -51,7 +61,13 @@ class FishrPenalty:
         return out / (1 - self.ema)
 
     def __call__(self, variances):
-        """``variances``: {env: [P]} for this step. Returns the scalar penalty."""
+        """``variances``: {env: [P]} for this step. Returns the scalar penalty.
+
+        With ``[S, P]`` variances (S stacked models, ``train.run_group``) the
+        moving averages are kept per model and the penalty is ``[S]``.
+        """
         smoothed = {e: self._smooth(e, v) for e, v in variances.items()}
         mean = torch.stack(list(smoothed.values())).mean(dim=0)
-        return torch.stack([(v - mean).pow(2).mean() for v in smoothed.values()]).mean()
+        if mean.dim() == 1:
+            return torch.stack([(v - mean).pow(2).mean() for v in smoothed.values()]).mean()
+        return torch.stack([(v - mean).pow(2).mean(dim=-1) for v in smoothed.values()]).mean(dim=0)

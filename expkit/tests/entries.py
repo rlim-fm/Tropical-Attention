@@ -34,3 +34,26 @@ def dies_on(ctx):
     if float(ctx.cell['lr']) == 0.3 and ctx.seed_index == 0:
         os._exit(9)
     return quadratic(ctx)
+
+
+def quadratic_group(ctxs):
+    """``quadratic``'s group variant: the same results, one call for every seed."""
+    return [quadratic(ctx) for ctx in ctxs]
+
+
+def group_raises(ctx):
+    return quadratic(ctx)
+
+
+def group_raises_group(ctxs):
+    """The group path always fails; each seed alone succeeds."""
+    raise RuntimeError('group failure')
+
+
+def bad_seed(ctx):
+    return quadratic(ctx)
+
+
+def bad_seed_group(ctxs):
+    """Seed 1 fails inside the group (reported, not raised); alone it succeeds."""
+    return [ValueError('seed 1 broke') if ctx.seed_index == 1 else quadratic(ctx) for ctx in ctxs]

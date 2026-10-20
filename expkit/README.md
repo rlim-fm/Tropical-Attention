@@ -86,7 +86,7 @@ profiles: {dry_run: {seeds: 2, base: {optim: {epochs: 1}}}}
 
 | command | does |
 |---|---|
-| `run` | trains every missing run (`--cpu-workers N`, or `--gpus 0,1 --per-gpu 2`; `--only lr=1e-3,seed=0`; `--force`; `--plan`) |
+| `run` | trains every missing run (`--cpu-workers N`, or `--gpus 0,1 --per-gpu 2`; `--group-seeds`; `--only lr=1e-3,seed=0`; `--force`; `--plan`) |
 | `status` | for every campaign: frozen and approved?, runs stored of total, failures |
 | `tune [--plan]` | grid-searches the YAML's `tune:` block on its own seeds and store, writes `tune/tune.csv`, and freezes the best candidate, unapproved (see `expkit/tune.py`) |
 | `freeze --set k=v` / `approve` | writes `frozen.yaml` with tuned values, unapproved; `approve` after you have read the evidence |
@@ -94,7 +94,7 @@ profiles: {dry_run: {seeds: 2, base: {optim: {epochs: 1}}}}
 | `report [--pdf]` | `stats_*.csv`, figures, `report.tex` |
 | `replay --keys K` | retrains stored runs and fails unless their curves match exactly (`--tolerance`) |
 | `clear [--only ...] --yes` | removes runs so they retrain after a fix that leaves their keys unchanged |
-| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4] [--report] [--plan]` | one `sbatch` job per campaign with runs missing; `--report` adds a report job per campaign that waits on that campaign's job |
+| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4 --gpu-type T --cpus-per-gpu K] [--cpu-partition P --cpu-cores N] [--group-seeds] [--report] [--plan]` | one `sbatch` job per campaign with runs missing, longest first; `--report` adds a report job per campaign that waits on that campaign's job |
 
 Pass the same `--profile` to every command. It selects the campaign directory
 `campaigns/<experiment>/<campaign>/` (`frozen.yaml`, `results/`, `report/`).
@@ -127,6 +127,27 @@ Pass the same `--profile` to every command. It selects the campaign directory
 (e.g. `main,mixed`), `EXPKIT_GB_PER_CORE`, `EXPKIT_JOB_PREFIX` (default `xk`)
 and `EXPKIT_SBATCH_ARGS` (e.g. `--time=12:00:00`). Run `--plan` first to print
 the `sbatch` lines.
+
+A campaign's `slurm:` block (top level, or in an axis level or profile) sets
+`device: gpu|cpu` and `cost` (default 1, a run's relative duration). Under
+`--gpus`, a `device: cpu` campaign goes to `--cpu-partition`
+(`EXPKIT_CPU_PARTITION`) with `--cpu-cores` cores instead. Campaigns are
+submitted in order of cost × missing runs, longest first. `--gpu-type`
+(`EXPKIT_GPU_TYPE`) pins the card (`--gres=gpu:pro6000:1`). `--cpus-per-gpu`
+asks `--cpus-per-gpu=K` instead of `-n --cores`, as queues that pair cores
+with cards expect. `EXPKIT_MPS=1` makes `launch.sh` run a private CUDA MPS
+daemon inside each GPU job.
+
+## Seed groups
+
+`--group-seeds` (on `run`, `tune`, `submit`) sends each cell's pending seeds to
+one worker when the entry's module also defines `<name>_group(ctxs)`, which
+returns one `RunResult` per context (or the exception that seed failed with).
+It is for small models that leave a GPU idle: train them stacked, under
+`torch.func.vmap`. Each seed is stored as its own run, with
+`extra['seed_group']`. A seed that fails is retried alone, and so is every
+seed of a group that raises. `replay` retrains one seed alone, so a grouped run
+reproduces only to float tolerance (`--tolerance 1e-5`).
 
 ## Not included
 

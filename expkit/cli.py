@@ -1,7 +1,7 @@
 """``python -m expkit <command>``: every stage of an experiment, from one YAML.
 
     expkit run      --config X [--profile P] [--cpu-workers N | --gpus 0,1 --per-gpu 2]
-                    [--only lr=0.01,seed=0] [--keys K,...] [--force] [--plan]
+                    [--group-seeds] [--only lr=0.01,seed=0] [--keys K,...] [--force] [--plan]
     expkit tune     --config X [--profile P] [--cpu-workers N | --gpus ...] [--plan]
                     # grid search per the `tune:` block -> frozen.yaml, unapproved
     expkit status   --config X                       # every campaign: frozen? stored? failed?
@@ -11,7 +11,9 @@
     expkit replay   --config X --keys K | --only ... [--tolerance 0]   # bit-identical check
     expkit clear    --config X [--only ...] [--yes]
     expkit submit   --config X [--stage tune|run] [--campaigns a/b,c/d] --cores 32
-                    [--gpus 1 --per-gpu 4] [--report] [--plan]               # Slurm
+                    [--gpus 1 --per-gpu 4 --gpu-type pro6000 --cpus-per-gpu 40]
+                    [--cpu-partition main --cpu-cores 32] [--group-seeds]
+                    [--report] [--plan]                                      # Slurm
 
 Every command takes ``--config``, ``--profile`` and ``--root``, and resolves the
 same campaign directory from them (``expkit.campaign``). Pass the same
@@ -77,9 +79,10 @@ def _launch(args, todo, store_root):
     gpus = [int(g) for g in args.gpus.split(',')] if args.gpus else None
     slots = device_slots(gpus, args.per_gpu, args.cpu_workers)
     threads = export_worker_env(slots)
-    print(f'-- {len(todo)} runs on {sorted(set(slots))} ({len(slots)} concurrent, '
-          f'{threads} thread(s) each)')
-    out = execute(todo, store_root, slots, retries=args.retries, threads=threads)
+    print(f'-- {len(todo)} runs on {sorted(set(slots))} ({len(slots)} concurrent'
+          f'{" seed groups" if args.group_seeds else ""}, {threads} thread(s) each)')
+    out = execute(todo, store_root, slots, retries=args.retries, threads=threads,
+                  group_seeds=args.group_seeds)
     print(f'\ndone: {len(out["ok"])} ok, {len(out["failed"])} failed'
           + (f' ({", ".join(out["failed"])}; tracebacks in registry.jsonl)' if out['failed'] else ''))
     return out
@@ -212,6 +215,22 @@ def cmd_clear(args, cfg):
                  [parse_selector(o) for o in (args.only or [])], yes=args.yes)
 
 
+def slurm_settings(cfg):
+    """A campaign's ``slurm:`` block: ``device`` ('gpu' or 'cpu') and ``cost``.
+
+    ``device: cpu`` sends the campaign to the CPU queue even when ``submit``
+    is given GPUs (small models can run as well on cores as on a shared card).
+    ``cost`` (default 1) is the relative time one of its runs takes; campaigns
+    are submitted in order of cost x missing runs, longest first, so the long
+    poles start before the short ones fill the queue.
+    """
+    block = cfg.extra.get('slurm') or {}
+    device = str(block.get('device', 'gpu')).lower()
+    if device not in ('gpu', 'cpu'):
+        raise SystemExit(f'{cfg.campaign}: slurm.device must be gpu or cpu, not {device!r}')
+    return device, float(block.get('cost', 1))
+
+
 def cmd_submit(args, cfg):
     from expkit.config import campaigns
     names = campaigns(cfg.path)
@@ -224,7 +243,9 @@ def cmd_submit(args, cfg):
     config_arg = os.path.relpath(cfg.path, slurm.REPO)
     ids = {}                  # campaign -> its job ids, so each report waits on its own
     tuning = args.stage == 'tune'
-    for name in names:
+    cpu_partition = args.cpu_partition or os.environ.get('EXPKIT_CPU_PARTITION')
+    todo = []                 # (cost, order, name, config, job name, device)
+    for order, name in enumerate(names):
         c = load_config(cfg.path, None if name == 'default' else name)
         job = slurm.job_name(c.experiment, c.campaign + ('-tune' if tuning else ''))
         try:
@@ -249,13 +270,23 @@ def cmd_submit(args, cfg):
             print(f'skip {c.campaign}: {job} is already queued ({", ".join(running)})')
             ids[name] = running
             continue
-        devices = (['--gpus', ','.join(str(i) for i in range(args.gpus)),
-                    '--per-gpu', str(args.per_gpu)] if args.gpus
-                   else ['--cpu-workers', str(args.cores)])
+        device, cost = slurm_settings(c)
+        todo.append((-cost * missing, order, name, job, device if args.gpus else 'cpu'))
+    for _, _, name, job, device in sorted(todo):
+        if device == 'gpu':
+            devices = ['--gpus', ','.join(str(i) for i in range(args.gpus)),
+                       '--per-gpu', str(args.per_gpu)]
+            options = dict(partition=args.partition, gpus=args.gpus, gpu_type=args.gpu_type,
+                           cpus_per_gpu=args.cpus_per_gpu)
+            cores = args.cores
+        else:
+            cores = args.cpu_cores or args.cores
+            devices = ['--cpu-workers', str(cores)]
+            options = dict(partition=cpu_partition if args.gpus else args.partition)
         run_args = [args.stage, '--config', config_arg, *devices,
+                    *(['--group-seeds'] if args.group_seeds else []),
                     *(['--profile', name] if name != 'default' else [])]
-        jid = slurm.submit(job, args.cores, run_args, partition=args.partition,
-                           gpus=args.gpus, plan=args.plan)
+        jid = slurm.submit(job, cores, run_args, plan=args.plan, **options)
         if jid:
             ids[name] = [jid]
     if args.report and not tuning:
@@ -265,7 +296,8 @@ def cmd_submit(args, cfg):
                 report_args += ['--profile', name]
             slurm.submit(slurm.job_name(cfg.experiment, f'{name}-report'), 1, report_args,
                          dependency='afterany:' + ':'.join(str(i) for i in jobs),
-                         partition=args.partition, plan=args.plan)
+                         partition=cpu_partition if args.gpus else args.partition,
+                         plan=args.plan)
     return 0
 
 
@@ -285,6 +317,8 @@ def parser():
     s.add_argument('--gpus', default=None, help='comma list of GPU indices')
     s.add_argument('--per-gpu', type=int, default=1)
     s.add_argument('--retries', type=int, default=2)
+    s.add_argument('--group-seeds', action='store_true',
+                   help="train each cell's seeds together (the entry's <name>_group)")
     s.add_argument('--only', action='append', help="subset, e.g. 'lr=0.01,seed=0' (repeatable)")
     s.add_argument('--keys', default=None)
     s.add_argument('--force', action='store_true', help='re-run stored runs')
@@ -295,6 +329,8 @@ def parser():
     s.add_argument('--gpus', default=None, help='comma list of GPU indices')
     s.add_argument('--per-gpu', type=int, default=1)
     s.add_argument('--retries', type=int, default=2)
+    s.add_argument('--group-seeds', action='store_true',
+                   help="train each cell's seeds together (the entry's <name>_group)")
     s.add_argument('--plan', action='store_true', help='list the candidates; train nothing')
 
     add('status', cmd_status, 'every campaign: frozen state, runs stored, failures')
@@ -333,7 +369,16 @@ def parser():
     s.add_argument('--cores', type=int, default=8)
     s.add_argument('--gpus', type=int, default=None, help='GPUs per job')
     s.add_argument('--per-gpu', type=int, default=1)
+    s.add_argument('--gpu-type', default=None, help="--gres card, e.g. 'pro6000'")
+    s.add_argument('--cpus-per-gpu', type=int, default=None,
+                   help='ask --cpus-per-gpu=K instead of -n --cores (GPU jobs)')
     s.add_argument('--partition', default=None)
+    s.add_argument('--cpu-partition', default=None,
+                   help='queue for campaigns with slurm.device: cpu, and the report jobs')
+    s.add_argument('--cpu-cores', type=int, default=None,
+                   help='cores for a slurm.device: cpu campaign (default: --cores)')
+    s.add_argument('--group-seeds', action='store_true',
+                   help="train each cell's seeds together (the entry's <name>_group)")
     s.add_argument('--report', action='store_true', help='then a report job per campaign')
     s.add_argument('--plan', action='store_true', help='print the sbatch lines; submit nothing')
     return p

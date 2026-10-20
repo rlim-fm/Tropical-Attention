@@ -85,3 +85,27 @@ def test_submit_plans_one_singleton_job_per_campaign(tmp_path, monkeypatch, caps
     assert out.count('--dependency=singleton') == 2
     assert '--job-name=xk-quad-noisy' in out and '--profile noisy' in out
     assert out.count('--dependency=afterany:') == 2
+
+
+def test_submit_routes_campaigns_and_starts_the_longest_first(tmp_path, monkeypatch, capsys):
+    axes = {'noise': {'clean': {'slurm': {'device': 'cpu'}},
+                      'noisy': {'base': {'offset': 1.0}, 'slurm': {'cost': 10}}}}
+    cfg_path = write_config(tmp_path / 'quad.yaml', axes=axes)
+    monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
+    run('submit', '--config', cfg_path, '--gpus', '1', '--per-gpu', '8', '--gpu-type', 'pro6000',
+        '--cpus-per-gpu', '40', '--partition', 'mixed', '--cpu-partition', 'main',
+        '--cpu-cores', '32', '--group-seeds', '--plan', '--report')
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith('$ sbatch')]
+    noisy, clean = lines[0], lines[1]                  # cost 10 x 3 runs before cost 1 x 3
+    assert '--job-name=xk-quad-noisy' in noisy and '-p mixed' in noisy
+    assert '--cpus-per-gpu=40' in noisy and '--gres=gpu:pro6000:1' in noisy and ' -n ' not in noisy
+    assert '--per-gpu 8' in noisy and '--group-seeds' in noisy
+    assert '--job-name=xk-quad-clean' in clean and '-p main' in clean and '-n 32' in clean
+    assert '--gres' not in clean and '--cpu-workers 32' in clean
+    assert all('-p main' in l for l in lines[2:]) and len(lines) == 4   # the report jobs
+
+
+def test_slurm_settings_rejects_an_unknown_device(tmp_path):
+    cfg_path = write_config(tmp_path / 'quad.yaml', slurm={'device': 'tpu'})
+    with pytest.raises(SystemExit, match='slurm.device'):
+        cli.slurm_settings(load_config(cfg_path))

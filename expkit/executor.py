@@ -15,6 +15,20 @@ them all would let three crashes exhaust the retries of every run in the grid.
 
 The parent process is the store's only writer: workers *return* the record
 and curves, and ``execute`` appends them.
+
+**Seed groups** (``group_seeds=True``, ``expkit run --group-seeds``): when the
+entry module also defines ``<name>_group`` (``train:run`` -> ``train:run_group``),
+the pending seeds of each cell go to one worker together, which calls it with
+their ``RunContext`` list and gets one ``RunResult`` per seed back, or the
+exception a seed failed with. A small model then trains S seeds per kernel
+launch instead of one. Each seed is still stored as its own run (with
+``extra['seed_group']`` and its share of the group's wall time), and only the
+seeds still missing are grouped, so a re-run fills the gaps. A slot holds one
+group, so ``--per-gpu`` counts groups. A seed that fails, and every seed of a
+group that raises or whose worker dies, is retried on its own, so one bad
+seed never sinks its siblings twice. ``replay`` retrains one seed alone, and
+batched kernels round differently, so a grouped run replays only to float
+tolerance (``expkit replay --tolerance 1e-5``), not bit for bit.
 """
 import importlib
 import multiprocessing as mp
@@ -29,6 +43,7 @@ import numpy as np
 from expkit.api import RunContext, RunResult
 from expkit.record import RunRecord, RunSpec, code_version, library_versions
 from expkit.seeding import DEFAULT_STREAMS, derive_seeds, enable_determinism
+from expkit.config import canonical_json
 from expkit.store import Store, format_exception
 from expkit.threads import export_device_env, export_thread_env, threads_per_worker
 
@@ -57,11 +72,11 @@ def _init_worker(queue, threads, started):
         torch.cuda.set_device(torch.device(_DEVICE))
 
 
-def _call(worker, key, spec_dict, store_root):
+def _call(worker, ident, payload, store_root):
     # A SimpleQueue writes before put() returns, so the parent can still read
-    # which run a worker held after the worker is killed mid-run.
-    _STARTED.put((os.getpid(), key))
-    return worker(spec_dict, store_root, _DEVICE)
+    # which run (or seed group) a worker held after the worker is killed mid-run.
+    _STARTED.put((os.getpid(), ident))
+    return worker(payload, store_root, _DEVICE)
 
 
 def _exit_reason(code):
@@ -133,6 +148,64 @@ def run_one(spec_dict, store_root, device='cpu'):
     spec = RunSpec.from_dict(spec_dict)
     artifact_dir = Store(store_root).artifact_dir(spec.key)
     seeds, result, wall = train_spec(spec, device, artifact_dir=artifact_dir)
+    return _output(spec, seeds, result, wall, device)
+
+
+def group_entry(entry):
+    """``'module:name_group'`` if the entry's module defines one, else None."""
+    module, sep, name = entry.partition(':')
+    try:
+        fn = getattr(importlib.import_module(module), f'{name}_group', None)
+    except ImportError:
+        return None
+    return f'{module}:{name}_group' if callable(fn) else None
+
+
+def seed_groups(specs):
+    """The specs bucketed by everything but the seed: one list per cell, in order."""
+    buckets = {}
+    for s in specs:
+        key = (s.entry, canonical_json(s.cell), s.frozen_hash, canonical_json(s.base),
+               s.global_seed, tuple(s.seed_streams or ()))
+        buckets.setdefault(key, []).append(s)
+    return list(buckets.values())
+
+
+def run_group(spec_dicts, store_root, device='cpu'):
+    """Train the seeds of one cell together through the entry's ``<name>_group``.
+
+    Returns one item per spec: ``run_one``'s output, or ``{'key', 'error'}``
+    for a seed the group entry reported as failed.
+    """
+    specs = [RunSpec.from_dict(d) for d in spec_dicts]
+    store = Store(store_root)
+    all_seeds = [derive_seeds(s.global_seed, s.seed_index, tuple(s.seed_streams or DEFAULT_STREAMS))
+                 for s in specs]
+    enable_determinism()
+    ctxs = [RunContext(base=s.base, cell=dict(s.cell), seeds=seeds, seed_index=s.seed_index,
+                       device=str(device), experiment=s.experiment,
+                       artifact_dir=store.artifact_dir(s.key))
+            for s, seeds in zip(specs, all_seeds)]
+    entry = group_entry(specs[0].entry)
+    if entry is None:
+        raise ValueError(f'{specs[0].entry} has no _group variant')
+    start = time.time()
+    results = list(load_entry(entry)(ctxs))
+    wall = time.time() - start
+    if len(results) != len(specs):
+        raise ValueError(f'{entry} returned {len(results)} results for {len(specs)} seeds')
+    out = []
+    for spec, seeds, result in zip(specs, all_seeds, results):
+        if isinstance(result, BaseException):
+            out.append({'key': spec.key, 'error': format_exception(result)})
+            continue
+        result = RunResult.coerce(result)
+        result.extra = {**(result.extra or {}), 'seed_group': len(specs)}
+        out.append(_output(spec, seeds, result, wall / len(specs), device))
+    return out
+
+
+def _output(spec, seeds, result, wall, device):
     sha, dirty = code_version()
     record = RunRecord(
         key=spec.key, experiment=spec.experiment, entry=spec.entry, cell=spec.cell,
@@ -186,21 +259,50 @@ def export_worker_env(slots):
     return threads
 
 
-def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, threads=None):
+def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, threads=None,
+            group_seeds=False, group_worker=run_group):
     """Run every spec; returns ``{'ok': [keys], 'failed': [keys]}``.
 
     If ``threads`` is given, the caller has already exported the worker
     environment (``export_worker_env``) and it is left alone. Without it, this
     pool assumes it is the only one running and exports its own.
+
+    ``group_seeds`` sends each cell's pending seeds to one worker together
+    when the entry has a ``_group`` variant (see the module docstring).
     """
     specs = list(specs)
     by_key = {s.key: s for s in specs}
     store = Store(store_root)
     if threads is None:
         threads = export_worker_env(slots)
-    queue_items = [(s, 1) for s in specs]
+    # A queue item: (specs, attempt, grouped). A group shares one attempt count.
+    queue_items = []
+    if group_seeds:
+        for bucket in seed_groups(specs):
+            grouped = len(bucket) > 1 and group_entry(bucket[0].entry) is not None
+            if len(bucket) > 1 and not grouped:
+                log(f'  ! {bucket[0].entry} has no _group variant; running its seeds one by one')
+            queue_items += [(tuple(bucket), 1, True)] if grouped else [((s,), 1, False) for s in bucket]
+    else:
+        queue_items = [((s,), 1, False) for s in specs]
     ok, failed = [], []
     total = len(specs)
+
+    def ident(item):
+        members, _, grouped = item
+        return 'group:' + '+'.join(s.key for s in members) if grouped else members[0].key
+
+    def stored(spec, attempt, out):
+        store.append_run(out['record'], out['curves'])
+        store.log_attempt(spec, 'ok', attempt, wall_seconds=out.get('wall_seconds'),
+                          device=out.get('device'))
+        ok.append(spec.key)
+        headline = ', '.join(f'{k}={v:.4g}' for k, v in out['metrics'].items()
+                             if isinstance(v, (int, float)))
+        group = (out['record'].extra or {}).get('seed_group')
+        log(f'  ✓ [{len(ok) + len(failed)}/{total}] {spec.key} {spec.label} '
+            f'({out.get("wall_seconds", 0):.1f}s, {out.get("device")}'
+            f'{f", group of {group}" if group else ""}) {headline}')
 
     while queue_items:
         ctx = mp.get_context('spawn')
@@ -211,9 +313,32 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
         pool = ProcessPoolExecutor(max_workers=len(slots), mp_context=ctx,
                                    initializer=_init_worker, initargs=(queue, threads, notes))
         started, inflight = {}, {}
-        for spec, attempt in queue_items:
-            inflight[pool.submit(_call, worker, spec.key, spec.to_dict(), store_root)] = (spec, attempt)
-            started[spec.key] = time.time()
+
+        def submit(item):
+            members, _, grouped = item
+            if grouped:
+                future = pool.submit(_call, group_worker, ident(item),
+                                     [s.to_dict() for s in members], store_root)
+            else:
+                future = pool.submit(_call, worker, ident(item), members[0].to_dict(), store_root)
+            inflight[future] = item
+            for s in members:
+                started[s.key] = time.time()
+
+        def charge(spec, attempt, error, reason=None, quiet=False):
+            """Log a failed attempt; queue the spec alone for the next, or give up."""
+            store.log_attempt(spec, 'failed', attempt, error=error,
+                              wall_seconds=time.time() - started[spec.key])
+            if attempt <= retries:
+                if not quiet:
+                    log(f'  ✗ {spec.key} {spec.label}: {reason or error} -- retry {attempt}/{retries}')
+                return ((spec,), attempt + 1, False)
+            log(f'  ✗ {spec.key} failed after {attempt} attempts')
+            failed.append(spec.key)
+            return None
+
+        for item in queue_items:
+            submit(item)
         queue_items = []
         broken = False
         try:
@@ -221,54 +346,45 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
                 done, _ = wait(inflight, return_when=FIRST_COMPLETED)
                 _drain(notes, held)
                 for future in done:
-                    spec, attempt = inflight.pop(future)
+                    item = inflight.pop(future)
+                    members, attempt, grouped = item
                     try:
                         out = future.result()
                     except BrokenProcessPool:
-                        inflight[future] = (spec, attempt)   # handled with the rest below
+                        inflight[future] = item   # handled with the rest below
                         raise
                     except Exception as exc:  # noqa: BLE001 -- any failure is recorded
-                        store.log_attempt(spec, 'failed', attempt, error=format_exception(exc),
-                                          wall_seconds=time.time() - started[spec.key])
-                        if attempt <= retries:
-                            log(f'  ✗ {spec.key} {spec.label}: {type(exc).__name__}: {exc} '
-                                f'-- retry {attempt}/{retries}')
-                            new = pool.submit(_call, worker, spec.key, spec.to_dict(), store_root)
-                            inflight[new] = (spec, attempt + 1)
-                            started[spec.key] = time.time()
-                        else:
-                            log(f'  ✗ {spec.key} failed after {attempt} attempts')
-                            failed.append(spec.key)
+                        for spec in members:
+                            retry = charge(spec, attempt, format_exception(exc),
+                                           reason=f'{type(exc).__name__}: {exc}')
+                            if retry:
+                                submit(retry)
                         continue
-                    store.append_run(out['record'], out['curves'])
-                    store.log_attempt(spec, 'ok', attempt, wall_seconds=out.get('wall_seconds'),
-                                      device=out.get('device'))
-                    ok.append(spec.key)
-                    headline = ', '.join(f'{k}={v:.4g}' for k, v in out['metrics'].items()
-                                         if isinstance(v, (int, float)))
-                    log(f'  ✓ [{len(ok) + len(failed)}/{total}] {spec.key} {spec.label} '
-                        f'({out.get("wall_seconds", 0):.1f}s, {out.get("device")}) {headline}')
+                    for spec, one in zip(members, out if grouped else [out]):
+                        if 'error' in one:
+                            retry = charge(spec, attempt, one['error'],
+                                           reason=one['error'].strip().splitlines()[-1])
+                            if retry:
+                                submit(retry)
+                        else:
+                            stored(spec, attempt, one)
         except BrokenProcessPool as exc:
             broken = True
-            running = {spec.key for spec, _ in inflight.values()}
+            running = {ident(item) for item in inflight.values()}
             dead = {k: v for k, v in _casualties(pool, notes, held).items() if k in running}
-            for future, (spec, attempt) in inflight.items():
-                if dead and spec.key not in dead:
-                    queue_items.append((spec, attempt))     # collateral: not its fault
+            for future, item in inflight.items():
+                if dead and ident(item) not in dead:
+                    queue_items.append(item)     # collateral: not its fault
                     continue
                 # With no culprit identified, every in-flight run is charged,
                 # so each rebuild still spends an attempt and the loop ends.
-                reason = dead.get(spec.key) or f'worker process died: {exc}'
-                store.log_attempt(spec, 'failed', attempt, error=reason,
-                                  wall_seconds=time.time() - started[spec.key])
-                if dead:
-                    log(f'  ✗ {spec.key} {spec.label}: {reason}'
-                        f'{f" -- retry {attempt}/{retries}" if attempt <= retries else ""}')
-                if attempt <= retries:
-                    queue_items.append((spec, attempt + 1))
-                else:
-                    failed.append(spec.key)
-            log(f'  ! a worker died; rebuilding the pool for {len(queue_items)} runs')
+                reason = dead.get(ident(item)) or f'worker process died: {exc}'
+                members, attempt, _ = item
+                for spec in members:
+                    retry = charge(spec, attempt, reason, quiet=not dead)
+                    if retry:
+                        queue_items.append(retry)
+            log(f'  ! a worker died; rebuilding the pool for {len(queue_items)} tasks')
         finally:
             pool.shutdown(wait=not broken, cancel_futures=broken)
 

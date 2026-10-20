@@ -129,34 +129,56 @@ artifacts are gitignored.
 #### Compute
 
 expkit parallelizes **across runs, never within one**. Each (cell, seed) is an
-independent job in a process pool. There is no data-parallel or multi-GPU
-training of a single run, which these models (50k–77k parameters) do not need.
+independent run. There is no data-parallel or multi-GPU training of a single
+run, which these models (50k–77k parameters) do not need. A single run is
+bound by Python and kernel-launch overhead and leaves a large GPU mostly idle,
+so the scripts pack work onto each card in two ways:
 
-- `--gpus 0,1 --per-gpu 4` starts 8 worker processes, each pinned to one GPU,
-  with the allocated CPUs split between them.
-- `--cpu-workers N` starts N CPU processes, with the GPUs hidden from them.
-- Apple-silicon MPS is not supported: a slot is `cpu` or `cuda:i`.
-- On Slurm, each script submits **one single-node job per campaign**:
-  - 13 campaigns means 13 jobs in parallel.
-  - Each job runs its campaign's runs `PER_GPU` at a time on `GPUS` GPUs.
-  - `--dependency=singleton` stops two jobs writing one campaign.
-  - Each report job waits on its own campaign's job.
-- A single run leaves a GPU mostly idle, so pack several per GPU (`PER_GPU=4`–`8`).
-- The graph tasks (FloydWarshall, SCC) are the memory-heavy ones. L nodes are
-  L² tokens, and tropical attention holds a B·H·S²·d_k tensor, so their batches
-  are small (`batch_size: 8`, `eval_batch_size: 8`).
+- **Seed groups** (`GROUP_SEEDS=1`, `--group-seeds`): one worker trains all
+  pending seeds of a cell together (`train.run_group`), as a stacked ensemble
+  under `torch.func.vmap`. That is S models per kernel launch. Each seed keeps
+  its own data, init and batch order, and results match `train.run` to ~1e-6
+  (`tests/test_train_group.py`), but not bit for bit, so replay a grouped run
+  with `--tolerance 1e-5`.
+- **Several workers per card** (`PER_GPU`, counted in groups), with a CUDA MPS
+  daemon per job (`EXPKIT_MPS=1`, `expkit/launch.sh`) so their kernels overlap.
+
+On Slurm each script submits **one single-node job per campaign**, longest
+first (the YAML's `slurm: {cost: ...}`). `--dependency=singleton` stops two jobs
+writing one campaign, and each report job waits on its own campaign's job. The
+defaults target the Bowdoin cluster's `mixed` queue. Its PRO6000 nodes (96 GB
+cards) take your full allowance there, 2 cards + 80 cores + 500 GB, as two jobs
+of 1 card + 40 cores + 120 GB. Two campaigns run at a time, each with all 12
+cells (60 models) training at once on its card. The `gpu` queue caps you at 4 cores in total, too few
+to feed a card. A campaign with `slurm: {device: cpu}` goes to the `main` queue
+(150 cores per user) instead.
+
+Benchmark before choosing devices. Time a few epochs of Knapsack and
+FloydWarshall in an interactive job (`srun -p mixed --gres=gpu:pro6000:1
+--cpus-per-gpu=40 --pty bash`) at a few `PER_GPU` values, with and without MPS
+and grouping, and compare against `main` with 2 threads per run. Then mark the
+campaigns that run as fast on cores `device: cpu`.
+
+The graph tasks (FloydWarshall, SCC) are the memory-heavy ones. L nodes are
+L² tokens, and tropical attention holds a B·H·S²·d_k tensor, so their batches
+are small (`batch_size: 8`, `eval_batch_size: 8`).
 
 | variable | default | meaning |
 |---|---|---|
 | `GPUS` | 1 | GPUs per Slurm job (locally: GPUs to use; 0 means CPU) |
-| `PER_GPU` | 4 | concurrent runs per GPU |
-| `CORES` | 8 | CPU cores per Slurm job |
-| `CPU_WORKERS` | 4 | concurrent CPU runs when there is no GPU |
+| `PER_GPU` | 12 | concurrent workers per GPU (each a seed group with `GROUP_SEEDS=1`; 12 = every cell of a campaign) |
+| `GROUP_SEEDS` | 1 | `1`: train each cell's seeds together |
+| `GPU_TYPE` | pro6000 | the card a GPU job asks for (`--gres=gpu:<type>:N`) |
+| `CPUS_PER_GPU` | 40 | cores a GPU job asks for, per card (`--cpus-per-gpu`) |
+| `CPU_CORES` | 32 | cores of a `device: cpu` campaign's job, or of every job when `GPUS=0` |
+| `CPU_WORKERS` | 4 | concurrent CPU runs locally when there is no GPU |
 | `LOCAL` | unset | `1`: run here, campaign after campaign, instead of submitting |
 | `CAMPAIGNS` / `PROFILE` | all | which campaigns, or one profile such as `dry_run` |
-| `EXPKIT_PARTITION` | unset | Slurm partition(s), e.g. `gpu` |
+| `EXPKIT_PARTITION` | mixed | partition of the GPU jobs |
+| `EXPKIT_CPU_PARTITION` | main | partition of the `device: cpu` and report jobs |
+| `EXPKIT_MPS` | 1 | run a CUDA MPS daemon inside each GPU job |
 | `EXPKIT_SBATCH_ARGS` | unset | extra sbatch flags, e.g. `--time=12:00:00 --account=X` |
-| `EXPKIT_GB_PER_CORE` | unset | `--mem` = cores × this |
+| `EXPKIT_GB_PER_CORE` | 3 | `--mem` = cores × this |
 
 ---
 

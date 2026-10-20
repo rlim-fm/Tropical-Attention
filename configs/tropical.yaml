@@ -48,6 +48,12 @@ headline: ood_len_f1
 replay_curves: [train_loss, fishr_penalty, id_val_loss]
 require_frozen: true     # no campaign runs before its tuning is frozen and approved
 
+# `expkit submit` (scripts/*_all.sh): where each campaign's job goes, and how long
+# one of its runs takes relative to the others (the longest are submitted first).
+# Set `device: cpu` on a campaign (or here, for all) to send it to the `main`
+# queue's cores instead of a GPU; benchmark first (see scripts/_settings.sh).
+slurm: {device: gpu, cost: 1}
+
 # `expkit tune` (scripts/tune_all.sh). The paper does no hyperparameter search:
 # every kernel shares the fixed setup in `base` (Hashemi et al. 2025, App. F and
 # Table 5). Only Fishr's own knob is searched, selected by training-domain
@@ -69,16 +75,20 @@ axes:
     FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset}}}
     MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null}}}
     Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null}}}
-    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000}}}
-    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000}}}
+    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000}},
+                        slurm: {cost: 10}}     # 10x the epochs
+    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000}},
+                 slurm: {cost: 10}}
     ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null}}}
     ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]}}}
     LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null}}}
     # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before).
     FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
-                           optim: {batch_size: 8, eval_batch_size: 8}}}
+                           optim: {batch_size: 8, eval_batch_size: 8}},
+                    slurm: {cost: 15}}         # 12.5x the steps, of L^2 tokens each
     SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
-                 optim: {batch_size: 8, eval_batch_size: 8}}}
+                 optim: {batch_size: 8, eval_batch_size: 8}},
+          slurm: {cost: 15}}
 
 profiles:
   dry_run:

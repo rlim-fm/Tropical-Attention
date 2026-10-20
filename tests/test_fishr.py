@@ -57,3 +57,25 @@ def test_ema_matches_domainbed():
     out = pen._smooth(0, a)
     prev = 0.1 * a
     assert torch.allclose(out, (0.9 * prev + 0.1 * a) / 0.1)
+
+
+def test_stacked_penalty_is_each_models_own():
+    torch.manual_seed(0)
+    per_model = [{L: torch.rand(7) for L in (4, 5, 6)} for _ in range(3)]
+    singles = [FishrPenalty(ema=0.9) for _ in per_model]
+    stacked = FishrPenalty(ema=0.9)
+    for _ in range(3):                                   # several steps, so the EMA matters
+        expected = torch.stack([fn(v) for fn, v in zip(singles, per_model)])
+        got = stacked({L: torch.stack([v[L] for v in per_model]) for L in (4, 5, 6)})
+        assert got.shape == (3,) and torch.allclose(got, expected)
+        per_model = [{L: v * 1.5 for L, v in m.items()} for m in per_model]
+
+
+def test_head_grads_from_a_given_state_match_the_heads_own():
+    torch.manual_seed(0)
+    model = build_model('tropical', 'pointer', 3, d_model=8, n_heads=2)
+    feats, y = torch.randn(5, 6, 8), (torch.rand(5, 6) > 0.5).float()
+    state = {n: p.detach().clone() for n, p in model.head.named_parameters()}
+    state.update({n: b for n, b in model.head.named_buffers()})
+    assert torch.allclose(per_sample_head_grads(model.head, feats, y, state=state),
+                          per_sample_head_grads(model.head, feats, y))

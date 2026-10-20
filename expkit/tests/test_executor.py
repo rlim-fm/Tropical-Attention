@@ -43,3 +43,53 @@ def test_a_dead_worker_charges_only_its_own_run(tmp_path):
     # a worker killed alongside the victim may share its pool, but is never charged
     # once the culprit is identified
     assert victim in charged
+
+
+def _records(tmp_path):
+    return {r.key: r for r in Store(tmp_path).load_records()}
+
+
+def test_seed_groups_train_each_cell_once_and_store_every_seed(tmp_path):
+    todo = specs('quadratic', seeds=3)
+    out = execute(todo, str(tmp_path), ['cpu'] * 2, group_seeds=True, log=lambda *a: None)
+    assert sorted(out['ok']) == sorted(s.key for s in todo) and not out['failed']
+    assert {r.extra.get('seed_group') for r in _records(tmp_path).values()} == {3}
+    alone = tmp_path / 'alone'
+    execute(todo, str(alone), ['cpu'], log=lambda *a: None)
+    assert ({k: r.metrics for k, r in _records(tmp_path).items()}
+            == {k: r.metrics for k, r in _records(alone).items()})
+
+
+def test_seed_groups_take_only_the_missing_seeds(tmp_path):
+    todo = specs('quadratic', lrs=(0.1,), seeds=3)
+    execute(todo[:1], str(tmp_path), ['cpu'], log=lambda *a: None)
+    rest = Store(tmp_path).pending(todo)
+    assert len(rest) == 2
+    execute(rest, str(tmp_path), ['cpu'], group_seeds=True, log=lambda *a: None)
+    groups = {r.seed_index: r.extra.get('seed_group') for r in _records(tmp_path).values()}
+    assert groups == {0: None, 1: 2, 2: 2}
+
+
+def test_a_failing_group_falls_back_to_single_runs(tmp_path):
+    todo = specs('group_raises', lrs=(0.1,), seeds=2)
+    out = execute(todo, str(tmp_path), ['cpu'], retries=1, group_seeds=True, log=lambda *a: None)
+    assert sorted(out['ok']) == sorted(s.key for s in todo)
+    statuses = sorted((a['seed_index'], a['status']) for a in Store(tmp_path).attempts())
+    assert statuses == [(0, 'failed'), (0, 'ok'), (1, 'failed'), (1, 'ok')]
+
+
+def test_a_seed_failing_inside_a_group_is_retried_alone(tmp_path):
+    todo = specs('bad_seed', lrs=(0.1,), seeds=3)
+    out = execute(todo, str(tmp_path), ['cpu'], retries=1, group_seeds=True, log=lambda *a: None)
+    assert sorted(out['ok']) == sorted(s.key for s in todo)
+    failed = [a for a in Store(tmp_path).attempts() if a['status'] == 'failed']
+    assert [a['seed_index'] for a in failed] == [1] and 'seed 1 broke' in failed[0]['error']
+    groups = {r.seed_index: r.extra.get('seed_group') for r in _records(tmp_path).values()}
+    assert groups == {0: 3, 1: None, 2: 3}
+
+
+def test_an_entry_without_a_group_variant_runs_one_by_one(tmp_path):
+    todo = specs('fails_once', lrs=(0.1,), seeds=2,
+                 base={'offset': 0.0, 'marker_dir': str(tmp_path)})
+    out = execute(todo, str(tmp_path), ['cpu'], retries=1, group_seeds=True, log=lambda *a: None)
+    assert sorted(out['ok']) == sorted(s.key for s in todo)
