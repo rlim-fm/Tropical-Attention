@@ -19,7 +19,14 @@ base:
          adversarial_range: [10, 30], noise_prob: 0.0}
   data:
     train_lengths: [4, 5, 6, 7, 8]   # one Fishr environment each
-    ood_lengths: [12, 16]            # 16 = twice the longest training length, as before
+    ood_lengths: [12, 16, 64]        # 64 = the paper's length OOD for set tasks (App. F)
+    # Value and noise OOD at the training lengths: Knapsack's row of Table 5 of
+    # Hashemi et al. 2025; each campaign below sets its own. A null range falls back:
+    # value doubles the training range (tasks.ood_value_range), noise uses the
+    # task's adversarial_range.
+    ood_value_range: [11, 21]
+    ood_noise_range: [10, 30]
+    ood_noise_prob: 0.5              # each input perturbed with probability 0.5 (App. F)
     n_per_length: 20000              # 100k training instances, as before
     n_eval_per_length: 2000
     curve_eval_limit: 256            # instances per length behind the per-epoch ood_len_f1 curve
@@ -42,6 +49,9 @@ metrics:
   ood_len_f1: {direction: max, bounds: [0, 1]}
   ood_len_exact: {direction: max, bounds: [0, 1]}
   ood_val_f1: {direction: max, bounds: [0, 1]}
+  ood_val_exact: {direction: max, bounds: [0, 1]}
+  ood_noise_f1: {direction: max, bounds: [0, 1]}
+  ood_noise_exact: {direction: max, bounds: [0, 1]}
   id_f1: {direction: max, bounds: [0, 1]}
   id_exact: {direction: max, bounds: [0, 1]}
 headline: ood_len_f1
@@ -62,22 +72,38 @@ tune:
   select: {metric: id_val_loss, direction: min}
 
 axes:
+  # `data` per campaign: Table 5's OOD value range and perturbative noise range.
+  # MaxSubsetSum and LIS are not in the table, so they clear them to the fallbacks.
   dataset:
     Knapsack: {}
-    SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null}}}
-    MaxSubsetSum: {base: {task: {name: MaxSubsetSumDataset, value_range: [-5, 5], target_range: null, weight_range: null}}}
-    FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset}}}
-    MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null}}}
-    Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null}}}
-    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000}}}
-    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000}}}
-    ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null}}}
-    ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]}}}
-    LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null}}}
-    # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before).
+    SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null},
+                               data: {ood_value_range: [-20, 20], ood_noise_range: [10, 30]}}}
+    MaxSubsetSum: {base: {task: {name: MaxSubsetSumDataset, value_range: [-5, 5], target_range: null, weight_range: null},
+                          data: {ood_value_range: null, ood_noise_range: null}}}
+    FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset},
+                                data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null},
+                           data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null},
+                         data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000},
+                               data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}}}
+    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000},
+                        data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}}}
+    ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null},
+                        data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]},
+                              data: {ood_value_range: [-375, 375], ood_noise_range: [40, 60]}}}
+    LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null},
+                 data: {ood_value_range: null, ood_noise_range: null}}}
+    # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before),
+    # and the paper's length OOD is 16 nodes (256 tokens), not 64.
     FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
+                           data: {ood_lengths: [12, 16], ood_value_range: [16, 30], ood_noise_range: [1, 10]},
                            optim: {batch_size: 8, eval_batch_size: 8}}}
+    # SCC: value_range is the edge probability; noise flips each edge with ood_noise_prob.
     SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
+                 data: {ood_lengths: [12, 16], ood_value_range: 0.1, ood_noise_range: null},
                  optim: {batch_size: 8, eval_batch_size: 8}}}
 
 profiles:

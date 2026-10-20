@@ -62,8 +62,12 @@ Its grid is model × head × objective, with 5 paired seeds per cell:
 Each dataset is a **campaign**, with its own directory `campaigns/tropical/<dataset>/`.
 The metrics are token F1 and exact-subset match:
 - in distribution (`id_*`)
-- at longer lengths (`ood_len_*`, the headline)
-- at larger values (`ood_val_*`)
+- at longer lengths (`ood_len_*`, the headline; per length in `ood_len_*_L<n>`, with 64 for set tasks and 16 nodes for graph tasks as in the paper)
+- at larger values (`ood_val_*`, the paper's Table 5 OOD value range per campaign)
+- under perturbative noise (`ood_noise_*`: each input perturbed with probability 0.5 by a draw from Table 5's noise range)
+
+The OOD settings are `data.ood_lengths`, `data.ood_value_range`, `data.ood_noise_range` and `data.ood_noise_prob` in `configs/tropical.yaml`.
+Unlike the paper, which reports the final checkpoint, every metric is taken at the epoch with the lowest ID validation loss.
 
 The code is split across:
 - `train.py`: the expkit entry
