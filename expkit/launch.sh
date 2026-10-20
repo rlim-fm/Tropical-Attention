@@ -12,7 +12,12 @@
 # The daemon's pipe and log directories live under $TMPDIR, so two jobs on one
 # node never share a daemon, and it is shut down when the command exits.
 set -euo pipefail
+# sbatch runs a copy of this script from its spool directory, so under Slurm the
+# script's own location says nothing; `expkit submit` calls sbatch from the repo.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -f "$REPO_ROOT/expkit/launch.sh" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    REPO_ROOT="$SLURM_SUBMIT_DIR"
+fi
 cd "$REPO_ROOT"
 if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
     PY="$REPO_ROOT/.venv/bin/python"

@@ -78,7 +78,7 @@ def submit(name, cores, args, *, dependency='singleton', partition=None, gb_per_
     mem = memory_gb(cores, gb_per_core)
     extra = list(extra or []) + shlex.split(os.environ.get('EXPKIT_SBATCH_ARGS', ''))
     cmd = ['sbatch', *(['--parsable'] if parsable else []), f'--job-name={name}',
-           '--output=slurm/%x-%j.out', f'--dependency={dependency}',
+           f'--chdir={REPO}', '--output=slurm/%x-%j.out', f'--dependency={dependency}',
            *(['--kill-on-invalid-dep=yes'] if kill_on_invalid else []),
            *(['-p', partition] if partition else []), '-N', '1',
            *([f'--cpus-per-gpu={cpus_per_gpu}'] if per_gpu else ['-n', str(cores)]),
