@@ -1,0 +1,3 @@
+fishr.lambda,runs,expected,diverged,id_val_loss_mean,id_val_loss_sd,eligible,frozen_hash,selected
+10.0,3,3,0,0.8115168968836466,0.22054225155373441,True,76b411856229,True
+1000.0,3,3,0,0.8115168968836466,0.22054225155373441,True,5ebe6c411df8,False
