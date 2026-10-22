@@ -1,0 +1,6 @@
+{"key":"a043e74fa1bf","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"vanilla","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":5.340001344680786,"error":null}
+{"key":"d0176fddb762","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"vanilla","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":5.6828453540802,"error":null}
+{"key":"3658e6790126","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"tropical","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":5.783009767532349,"error":null}
+{"key":"a3e817d143a2","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"tropical","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":6.196247339248657,"error":null}
+{"key":"47d6303cc8a0","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"adaptive","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":5.148961305618286,"error":null}
+{"key":"698b98da456e","status":"ok","attempt":1,"at":"2026-10-19T23:13:45","cell":{"model_type":"adaptive","head":"seq2seq","objective":"fishr"},"seed_index":0,"device":"cuda:0","wall_seconds":5.860921859741211,"error":null}

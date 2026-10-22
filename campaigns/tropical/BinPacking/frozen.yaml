@@ -58,6 +58,6 @@ base:
     reset_optimizer: true
 evidence: campaigns/tropical/BinPacking/tune/tune.csv
 provenance:
-  created: '2026-10-22T15:06:03'
-  git_sha: e5ccce80341cd41d217c9da7eef4689c898eaab0
-  git_dirty: false
+  created: '2026-10-22T19:12:34'
+  git_sha: 0f0fa8f4deff714e79aa5006c97eca98251cf6fb
+  git_dirty: true
