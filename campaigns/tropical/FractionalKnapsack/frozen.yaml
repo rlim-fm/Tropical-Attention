@@ -59,7 +59,9 @@ base:
     anneal_iters: 1500
     reset_optimizer: true
 evidence: campaigns/tropical/FractionalKnapsack/tune/tune.csv
+report: campaigns/tropical/FractionalKnapsack/tune/report/tune_report.pdf
+verdict: review
 provenance:
-  created: '2026-10-22T19:12:34'
-  git_sha: 0f0fa8f4deff714e79aa5006c97eca98251cf6fb
+  created: '2026-10-22T19:17:03'
+  git_sha: 7cc52035f92585bfc5135664c45c0eacd1c2de00
   git_dirty: true

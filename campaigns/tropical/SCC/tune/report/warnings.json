@@ -1,0 +1,30 @@
+{
+ "verdict": "review",
+ "warnings": [
+  {
+   "level": "review",
+   "message": "the winner is not distinguishable from fishr.lambda=100: the paired gap's 95% CI is [-6.06e-05, 6.91e-05]"
+  },
+  {
+   "level": "review",
+   "message": "fishr.lambda=10: fishr.lambda * fishr_penalty_final is 0.0014 of id_val_loss (median over runs); the term barely enters the loss"
+  },
+  {
+   "level": "review",
+   "message": "12 of 12 winner runs reached their best id_val_loss at the last logged epoch: the search budget may be too short to rank candidates"
+  },
+  {
+   "level": "review",
+   "message": "12 of 12 winner runs picked their last epoch (best_epoch = 19): still improving when the search budget ran out, so candidates were ranked before converging"
+  },
+  {
+   "level": "info",
+   "message": "the search ran with optim.epochs=20; the grid runs with optim.epochs=100"
+  },
+  {
+   "level": "info",
+   "message": "devices: cuda:0"
+  }
+ ],
+ "built": "2026-10-22T19:17:34"
+}

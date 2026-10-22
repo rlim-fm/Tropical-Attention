@@ -1,0 +1,14 @@
+campaign,tuned,tune_verdict,blocks,reviews,approved,stored,expected,diverged
+Knapsack,fishr.lambda=10,review,0,3,False,0,60,0
+SubsetSumDecision,fishr.lambda=10,review,0,3,False,0,60,0
+MaxSubsetSum,fishr.lambda=100,review,0,7,False,0,60,0
+FractionalKnapsack,fishr.lambda=10,review,0,3,False,0,60,0
+MinCoinChange,fishr.lambda=10,review,0,4,False,0,60,0
+Quickselect,fishr.lambda=10,review,0,3,False,0,60,0
+BalancedPartition,fishr.lambda=10,review,0,4,False,0,60,0
+BinPacking,fishr.lambda=10,review,0,3,False,0,60,0
+ConvexHull,fishr.lambda=10,review,0,3,False,0,60,0
+ThreeSumDecision,fishr.lambda=10,review,0,3,False,0,60,0
+LIS,fishr.lambda=10,review,0,3,False,0,60,0
+FloydWarshall,fishr.lambda=10000,review,0,7,False,0,60,0
+SCC,fishr.lambda=1000,review,0,4,False,0,60,0
