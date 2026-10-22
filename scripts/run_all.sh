@@ -1,6 +1,7 @@
 #!/bin/bash
 # Step 3 of 3: the full grid of every approved campaign, then its report
-# (campaigns/<experiment>/<campaign>/report/). Unapproved campaigns are skipped.
+# (campaigns/<experiment>/<campaign>/report/), then the grand report over every campaign
+# (campaigns/<experiment>/grand/). Unapproved campaigns are skipped.
 #
 #   scripts/run_all.sh --plan                       # print the sbatch lines; submit nothing
 #   scripts/run_all.sh                              # one Slurm job per campaign + a report job each
@@ -17,6 +18,7 @@ if [ "${LOCAL:-0}" = 1 ]; then
             echo "skip report for $target: its runs did not all complete (or it is not approved)"
         fi
     done
+    "$EXPKIT" grand --config "$CONFIG"
 else
-    "$EXPKIT" submit --config "$CONFIG" $(slurm_devices) $(campaign_flag) --report "$@"
+    "$EXPKIT" submit --config "$CONFIG" $(slurm_devices) $(campaign_flag) --report --grand "$@"
 fi

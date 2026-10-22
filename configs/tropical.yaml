@@ -76,6 +76,10 @@ tune:
   base: {optim: {epochs: 20}}      # reduced budget for the search only
   space: {fishr.lambda: [10.0, 100.0, 1000.0, 10000.0]}
   select: {metric: id_val_loss, direction: min}
+  report:                          # checks in the tuning report that know what lambda does
+    warmup: fishr.anneal_iters     # the penalty only switches on at this step
+    penalty: {metric: fishr_penalty_final, weight: fishr.lambda, against: id_val_loss}
+    best_epoch: {metric: best_epoch, epochs: optim.epochs}   # selected epoch = last one: not converged
 
 axes:
   # `data` per campaign: Table 5's OOD value range and perturbative noise range.

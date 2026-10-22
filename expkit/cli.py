@@ -149,8 +149,23 @@ def cmd_freeze(args, cfg):
 
 
 def cmd_approve(args, cfg):
-    path, doc = frozen.approve(cfg, parse_assignments(args.set), root=args.root)
+    path, doc = frozen.approve(cfg, parse_assignments(args.set), root=args.root, force=args.force)
     print(f'approved {path} (frozen hash {doc["frozen_hash"]})')
+    return 0
+
+
+def cmd_tune_report(args, cfg):
+    from expkit import tune_report
+    report = tune_report.build(cfg, args.root, pdf=not args.no_pdf, n_boot=args.n_boot)
+    path = tune_report.stamp(cfg, report, args.root)
+    if path:
+        print(f'stamped {path} with verdict {report["verdict"]}')
+    return 0
+
+
+def cmd_grand(args, cfg):
+    from expkit import grand
+    grand.build(cfg, pdf=not args.no_pdf, n_boot=args.n_boot)
     return 0
 
 
@@ -289,15 +304,25 @@ def cmd_submit(args, cfg):
         jid = slurm.submit(job, cores, run_args, plan=args.plan, **options)
         if jid:
             ids[name] = [jid]
+    waits = [str(i) for jobs in ids.values() for i in jobs]
     if args.report and not tuning:
+        waits = []
         for name, jobs in ids.items():
             report_args = ['report', '--config', config_arg, '--pdf']
             if name != 'default':
                 report_args += ['--profile', name]
-            slurm.submit(slurm.job_name(cfg.experiment, f'{name}-report'), 1, report_args,
-                         dependency='afterany:' + ':'.join(str(i) for i in jobs),
-                         partition=cpu_partition if args.gpus else args.partition,
-                         plan=args.plan)
+            jid = slurm.submit(slurm.job_name(cfg.experiment, f'{name}-report'), 1, report_args,
+                               dependency='afterany:' + ':'.join(str(i) for i in jobs),
+                               partition=cpu_partition if args.gpus else args.partition,
+                               plan=args.plan)
+            if jid:
+                waits.append(str(jid))
+    if args.grand:
+        # after every job above (each tune job writes its own tuning report), or at once
+        slurm.submit(slurm.job_name(cfg.experiment, 'grand'), 1,
+                     ['grand', '--config', config_arg],
+                     dependency=('afterany:' + ':'.join(waits)) if waits else 'singleton',
+                     partition=cpu_partition if args.gpus else args.partition, plan=args.plan)
     return 0
 
 
@@ -341,13 +366,23 @@ def parser():
     s.add_argument('--from-default', action='store_true',
                    help="derive from the default campaign's approved file")
 
+    s = add('tune-report', cmd_tune_report, "rebuild the search's report (tune/report/)")
+    s.add_argument('--no-pdf', action='store_true', help='write the .tex only')
+    s.add_argument('--n-boot', type=int, default=2000)
+
     s = add('approve', cmd_approve, 'approve frozen.yaml')
     s.add_argument('--set', action='append', metavar='KEY=VALUE')
+    s.add_argument('--force', action='store_true',
+                   help="approve although the tuning report says 'do not approve'")
 
     s = add('report', cmd_report, 'statistics, figures and report.tex')
     s.add_argument('--store', default=None)
     s.add_argument('--out-dir', default=None)
     s.add_argument('--pdf', action='store_true')
+    s.add_argument('--n-boot', type=int, default=2000)
+
+    s = add('grand', cmd_grand, 'the grand report over every campaign (campaigns/<exp>/grand/)')
+    s.add_argument('--no-pdf', action='store_true', help='write the .tex only')
     s.add_argument('--n-boot', type=int, default=2000)
 
     s = add('replay', cmd_replay, 'retrain stored runs and check their curves')
@@ -380,6 +415,8 @@ def parser():
     s.add_argument('--group-seeds', action='store_true',
                    help="train each cell's seeds together (the entry's <name>_group)")
     s.add_argument('--report', action='store_true', help='then a report job per campaign')
+    s.add_argument('--grand', action='store_true',
+                   help='then one grand-report job over every campaign, after all the others')
     s.add_argument('--plan', action='store_true', help='print the sbatch lines; submit nothing')
     return p
 

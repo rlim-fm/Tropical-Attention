@@ -3,7 +3,8 @@
 ``expkit tune`` runs every candidate of a small grid over ``base`` settings, on
 seeds of its own, into a store of its own. It picks the best candidate by one
 metric and writes it into the campaign's ``frozen.yaml``, **unapproved**, with
-the table that justifies it as evidence. Someone reads the table and runs
+the table that justifies it as evidence and a tuning report (``expkit.tune_report``)
+whose verdict says how far to trust it. Someone reads the report and runs
 ``expkit approve``. Only then does ``expkit run`` spend the grid's budget::
 
     tune:
@@ -140,17 +141,21 @@ def summarize(cfg, root=None):
     return table, best
 
 
-def finalize(cfg, root=None, log=print):
-    """Write the evidence table, and the best candidate into an unapproved ``frozen.yaml``.
+def finalize(cfg, root=None, log=print, pdf=True):
+    """Write the evidence table and the tuning report (``expkit.tune_report``), and the
+    best candidate into an unapproved ``frozen.yaml`` that carries the report's verdict.
 
     Returns the frozen path, or None while runs are missing. A frozen file that
     is already approved with the same values is left alone.
     """
+    from expkit import tune_report
+
     table, best = summarize(cfg, root)
     path = evidence_path(cfg, root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     table.to_csv(path, index=False)
     log(table.drop(columns=['frozen_hash']).to_string(index=False))
+    report = tune_report.build(cfg, root, pdf=pdf, log=log)
     if best is None:
         log(f'not frozen: the search is incomplete or no candidate is eligible ({path})')
         return None
@@ -160,9 +165,11 @@ def finalize(cfg, root=None, log=print):
             and doc.get('frozen_hash') == new_hash):
         log(f'unchanged: {campaign.frozen_path(cfg, root)} is approved with {best}')
         return campaign.frozen_path(cfg, root)
-    fpath, _ = frozen.freeze(cfg, tuned=best, evidence=os.path.relpath(path), root=root)
-    log(f'wrote {fpath} with {best} (unapproved). Read {os.path.relpath(path)}, then:\n'
-        f'    expkit approve {campaign.cli_flags(cfg, root)}')
+    read = os.path.relpath(report['pdf'] or report['path'])
+    fpath, _ = frozen.freeze(cfg, tuned=best, evidence=os.path.relpath(path), root=root,
+                             report=read, verdict=report['verdict'])
+    log(f'wrote {fpath} with {best} (unapproved, verdict {report["verdict"]}). '
+        f'Read {read}, then:\n    expkit approve {campaign.cli_flags(cfg, root)}')
     return fpath
 
 

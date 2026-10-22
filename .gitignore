@@ -226,9 +226,10 @@ wandb/
 literature
 CLAUDE.md
 
-# expkit: bulky outputs (track runs.jsonl, configs.jsonl, registry.jsonl, frozen.yaml)
-campaigns/**/results/curves.jsonl
-campaigns/**/results/curves.jsonl.cleared-*
-campaigns/**/results/artifacts/
-campaigns/**/results/*.tmp-*
+# expkit: run data stays on the cluster; git carries what to read and approve: frozen.yaml,
+# tune/tune.csv, and the reports (tune/report/, report/, grand/), built there by the scripts.
+campaigns/**/results/
+campaigns/**/*.aux
+campaigns/**/*.out
+campaigns/**/*.tmp-*
 slurm/*.out

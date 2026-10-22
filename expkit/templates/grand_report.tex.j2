@@ -1,0 +1,72 @@
+<# The grand report: every campaign of an experiment (see expkit/grand.py). #>
+\documentclass[10pt]{article}
+\usepackage[margin=2.0cm]{geometry}
+\usepackage{booktabs,longtable,graphicx,array,xcolor}
+\usepackage[hidelinks]{hyperref}
+\setlength{\tabcolsep}{3.5pt}
+<% set others = levels[1:] %>
+<% macro facet_cols(r) %><% for f in facets %><< r[f]|level >> & <% endfor %><% endmacro %>
+\title{<< cfg.experiment|escape >>: every campaign}
+\date{<< built|escape >>}
+\begin{document}
+\maketitle
+
+\section{Status}
+\autoref{tab:status} lists every campaign: the values its search tuned, that search's verdict (\texttt{tune/report/}), whether \texttt{frozen.yaml} is approved, and how much of its grid is stored.
+<< n_results >> of << status|length >> campaigns have grid results.
+
+{\small
+\begin{longtable}{lllrrlrr}
+\caption{Per campaign: tuned values, tuning-report verdict (blocks/reviews), approval, grid runs stored/expected and diverged.}\label{tab:status}\\
+\toprule
+campaign & tuned & verdict & blk & rev & approved & runs & div.\\
+\midrule
+\endhead
+<% for r in status %>
+<< r.campaign|escape >> & << r.tuned|escape >> & << r.tune_verdict|escape >> & << r.blocks >> & << r.reviews >> & << 'yes' if r.approved else '\\textbf{no}' >> & << r.stored >>/<< r.expected >> & << r.diverged >>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+
+<% if sections %>
+\section{Results}
+Columns are the levels of \texttt{<< col|escape >>}; each campaign's rows are the combinations of <% for f in facets %>\texttt{<< f|escape >>}<% if not loop.last %>, <% endif %><% endfor %>.
+Means are over seeds, the best per row in bold. $\Delta$ is a level's paired difference against the control (<< control|escape >>) by seed, marked $^*$ where $p < << alpha >>$ after the campaign's correction.
+<% if figure %>
+\autoref{fig:grand} shows the headline metric at a glance.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{<< figure >>}
+\caption{The headline metric, \texttt{<< sections[0].metric|escape >>}: every campaign by cell.}
+\label{fig:grand}
+\end{figure}
+<% endif %>
+
+<% for s in sections %>
+<% if not s.headline and loop.index0 == 1 %>
+\clearpage
+\appendix
+\section{Other metrics}
+<% endif %>
+\subsection{\texttt{<< s.metric|escape >>} (<< 'lower' if s.direction == 'min' else 'higher' >> is better)}
+{\small
+\begin{longtable}{l<% for f in facets %>l<% endfor %><% for _ in levels %>r<% endfor %><% for _ in others %>r<% endfor %>}
+\caption{\texttt{<< s.metric|escape >>} per campaign: means by \texttt{<< col|escape >>}, and $\Delta$ against << control|escape >>.}\label{tab:<< s.metric >>}\\
+\toprule
+campaign & <% for f in facets %>\texttt{<< f|escape >>} & <% endfor %><% for lv in levels %><< lv|escape >> & <% endfor %><% for lv in others %>$\Delta$ << lv|escape >><% if not loop.last %> & <% endif %><% endfor %>\\
+\midrule
+\endhead
+<% for r in s.rows %>
+<< r.campaign|escape >> & << facet_cols(r) >><% for lv in levels %><% set m = r[lv ~ '_mean'] if (lv ~ '_mean') in r else none %><% if lv == r.best %>\textbf{<< m|num(3) >>}<% else %><< m|num(3) >><% endif %> & <% endfor %><% for lv in others %><% set d = r[lv ~ '_diff'] if (lv ~ '_diff') in r else none %><% set p = r[lv ~ '_p'] if (lv ~ '_p') in r else none %><< d|num(2) >><% if p is not none and p < alpha %>$^*$<% endif %><% if not loop.last %> & <% endif %><% endfor %>\\
+<% endfor %>
+\bottomrule
+\end{longtable}
+}
+<% endfor %>
+<% else %>
+\section{Results}
+No campaign has grid results yet: approve the tuned campaigns, then run \texttt{scripts/run\_all.sh}.
+<% endif %>
+\end{document}
