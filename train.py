@@ -8,9 +8,10 @@ A run is a function of (base, cell, seeds) (``expkit.api``):
 * ``ctx.seeds['init']`` seeds the weights (and dropout),
 * ``ctx.seeds['sampler']`` seeds a CPU generator for the batch order.
 
-Cells (``configs/tropical.yaml``): ``model_type`` x ``head`` x ``objective``.
+Cells (``configs/tropical.yaml``): ``model_type`` x ``head`` x ``fishr_lambda``
+(lambda = 0 is ERM).
 Every step takes one minibatch from each training length. ERM and Fishr see
-the same batches, so the objective contrast is seed-paired.
+the same batches, so every lambda is seed-paired with ERM.
 
 ``run_group`` trains several seeds of one cell at once (``expkit run
 --group-seeds``): the models are stacked (``torch.func.stack_module_state``)
@@ -117,7 +118,7 @@ def _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, be
         'ood_noise_f1': noise_m['f1'], 'ood_noise_exact': noise_m['exact'],
         'fishr_penalty_final': curves['fishr_penalty'][-1],
         'best_epoch': best_epoch,
-        'id_val_loss': best_val,             # the model-selection criterion; what `tune` selects on
+        'id_val_loss': best_val,             # the model-selection criterion
     }
     for L, (f1, exact) in ood_per_length.items():
         metrics[f'ood_len_f1_L{L}'] = f1
@@ -141,11 +142,10 @@ def run(ctx: RunContext) -> RunResult:
     lr = float(optim['lr'])
     opt = _optimizer(model, lr)
 
-    use_fishr = cell['objective'] == 'fishr'
-    if cell['objective'] not in ('erm', 'fishr'):
-        raise ValueError(f"Unknown objective {cell['objective']!r}")
+    lam = float(cell['fishr_lambda'])
+    use_fishr = lam > 0
     penalty_fn = FishrPenalty(ema=float(fishr_cfg['ema']))
-    lam, anneal = float(fishr_cfg['lambda']), int(fishr_cfg['anneal_iters'])
+    anneal = int(fishr_cfg['anneal_iters'])
 
     order = torch.Generator().manual_seed(ctx.seeds['sampler'])
     bs = int(optim['batch_size'])           # per environment
@@ -304,9 +304,8 @@ def run_group(ctxs):
         full, head = split_state(*state)
         return functional_call(skeleton.head, head, (functional_call(features, full, (x,)),))
 
-    use_fishr = cell['objective'] == 'fishr'
-    if cell['objective'] not in ('erm', 'fishr'):
-        raise ValueError(f"Unknown objective {cell['objective']!r}")
+    lam = float(cell['fishr_lambda'])
+    use_fishr = lam > 0
 
     def seed_step(p, b, xs, ys):
         full, head = split_state(p, b)
@@ -329,7 +328,7 @@ def run_group(ctxs):
 
     opt = optimizer()
     penalty_fn = FishrPenalty(ema=float(fishr_cfg['ema']))
-    lam, anneal = float(fishr_cfg['lambda']), int(fishr_cfg['anneal_iters'])
+    anneal = int(fishr_cfg['anneal_iters'])
 
     orders = [torch.Generator().manual_seed(ctx.seeds['sampler']) for ctx in ctxs]
     bs = int(optim['batch_size'])           # per environment

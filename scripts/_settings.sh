@@ -1,4 +1,4 @@
-# Shared by tune_all.sh, approve_all.sh and run_all.sh; sourced, not run.
+# Sourced by run_all.sh, not run.
 #
 #   CONFIG       experiment YAML                          (configs/tropical.yaml)
 #   CAMPAIGNS    comma list of campaigns                  (every campaign)

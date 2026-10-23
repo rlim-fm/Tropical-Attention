@@ -1,5 +1,8 @@
 # Tropical vs softmax attention on subset-selection tasks, seq2seq vs pointer head,
-# ERM vs Fishr with one environment per training sequence length.
+# and Fishr's lambda as an independent variable (log10 grid; 0 = ERM), with one
+# Fishr environment per training sequence length. Everything else is the original
+# Tropical Attention setup (upstream experiment.py and jobs_to_do_train.csv at the
+# fork, MHTA v2.0.0). Nothing is tuned: run the grid, then report.
 #
 #   python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4
 #   python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
@@ -32,18 +35,20 @@ base:
     curve_eval_limit: 256            # instances per length behind the per-epoch ood_len_f1 curve
   model: {d_model: 64, n_heads: 2, num_layers: 1, dropout: 0.0, tropical_impl: legacy}
   optim: {lr: 0.0001, epochs: 100, batch_size: 100, eval_batch_size: 256}   # batch_size per environment
-  fishr: {lambda: 1000.0, ema: 0.95, anneal_iters: 1500, reset_optimizer: true}   # DomainBed defaults
+  fishr: {ema: 0.95, anneal_iters: 1500, reset_optimizer: true}   # DomainBed defaults, fixed
 
 factors:
   model_type: [vanilla, adaptive, tropical]
   head: [seq2seq, pointer]
-  objective: [erm, fishr]
+  fishr_lambda: [0.0, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]   # 0 = ERM
 
-control: {model_type: vanilla}
+control: {fishr_lambda: 0.0}     # every lambda against ERM
 analysis:
+  trend: {factor: fishr_lambda, transform: log10}   # lambda = 0 drops out of the log trend
   paired:
+    - {factor: model_type, a: tropical, b: vanilla}
+    - {factor: model_type, a: adaptive, b: vanilla}
     - {factor: head, a: pointer, b: seq2seq}
-    - {factor: objective, a: fishr, b: erm}
 
 metrics:
   ood_len_f1: {direction: max, bounds: [0, 1]}
@@ -56,30 +61,13 @@ metrics:
   id_exact: {direction: max, bounds: [0, 1]}
 headline: ood_len_f1
 replay_curves: [train_loss, fishr_penalty, id_val_loss]
-require_frozen: true     # no campaign runs before its tuning is frozen and approved
+require_frozen: false
 
-# `expkit submit` (scripts/*_all.sh): where each campaign's job goes, and how long
+# `expkit submit` (scripts/run_all.sh): where each campaign's job goes, and how long
 # one of its runs takes relative to the others (the longest are submitted first).
 # Set `device: cpu` on a campaign (or here, for all) to send it to the `main`
 # queue's cores instead of a GPU; benchmark first (see scripts/_settings.sh).
 slurm: {device: gpu, cost: 1}
-
-# `expkit tune` (scripts/tune_all.sh). The paper does no hyperparameter search:
-# every kernel shares the fixed setup in `base` (Hashemi et al. 2025, App. F and
-# Table 5). Only Fishr's own knob is searched, selected by training-domain
-# validation as in Fishr/DomainBed, on seeds the grid never uses. One value per
-# campaign, shared by every cell.
-tune:
-  global_seed: 1000
-  seeds: 2
-  only: {objective: fishr}
-  base: {optim: {epochs: 20}}      # reduced budget for the search only
-  space: {fishr.lambda: [10.0, 100.0, 1000.0, 10000.0]}
-  select: {metric: id_val_loss, direction: min}
-  report:                          # checks in the tuning report that know what lambda does
-    warmup: fishr.anneal_iters     # the penalty only switches on at this step
-    penalty: {metric: fishr_penalty_final, weight: fishr.lambda, against: id_val_loss}
-    best_epoch: {metric: best_epoch, epochs: optim.epochs}   # selected epoch = last one: not converged
 
 axes:
   # `data` per campaign: Table 5's OOD value range and perturbative noise range.
@@ -123,10 +111,8 @@ axes:
 profiles:
   dry_run:
     seeds: 2
-    require_frozen: false  # the smoke test runs without tuning
+    factors: {fishr_lambda: [0.0, 1.0]}
     base:
       data: {train_lengths: [4, 5], ood_lengths: [8], n_per_length: 64, n_eval_per_length: 32, curve_eval_limit: 16}
       optim: {epochs: 2, batch_size: 16}
       fishr: {anneal_iters: 2}
-    tune: {seeds: 1, only: {objective: fishr, head: seq2seq}, base: {optim: {epochs: 1}},
-           space: {fishr.lambda: [10.0, 1000.0]}}

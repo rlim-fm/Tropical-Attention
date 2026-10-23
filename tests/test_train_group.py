@@ -26,10 +26,10 @@ def _deviation(a, b):
     return worst
 
 
-@pytest.mark.parametrize('model_type,head,objective', list(itertools.product(
-    ('vanilla', 'adaptive', 'tropical'), ('seq2seq', 'pointer'), ('erm', 'fishr'))))
-def test_group_matches_single_runs(model_type, head, objective):
-    cell = {'model_type': model_type, 'head': head, 'objective': objective}
+@pytest.mark.parametrize('model_type,head,fishr_lambda', list(itertools.product(
+    ('vanilla', 'adaptive', 'tropical'), ('seq2seq', 'pointer'), (0.0, 10.0))))
+def test_group_matches_single_runs(model_type, head, fishr_lambda):
+    cell = {'model_type': model_type, 'head': head, 'fishr_lambda': fishr_lambda}
     singles = [train.run(ctx) for ctx in _ctxs(cell)]
     group = train.run_group(_ctxs(cell))
     assert len(group) == len(singles)
@@ -50,7 +50,7 @@ def test_a_diverging_seed_leaves_the_others_alone(monkeypatch):
         return model
 
     monkeypatch.setattr(train, '_model', poisoned)
-    cell = {'model_type': 'vanilla', 'head': 'seq2seq', 'objective': 'fishr'}
+    cell = {'model_type': 'vanilla', 'head': 'seq2seq', 'fishr_lambda': 10.0}
     singles = [train.run(ctx) for ctx in _ctxs(cell)]
     group = train.run_group(_ctxs(cell))
     assert singles[1].diverged and group[1].diverged
@@ -61,13 +61,13 @@ def test_a_diverging_seed_leaves_the_others_alone(monkeypatch):
 
 
 def test_one_seed_falls_back_to_run():
-    cell = {'model_type': 'vanilla', 'head': 'seq2seq', 'objective': 'erm'}
+    cell = {'model_type': 'vanilla', 'head': 'seq2seq', 'fishr_lambda': 0.0}
     (alone,) = train.run_group(_ctxs(cell, n=1))
     assert _deviation(train.run(_ctxs(cell, n=1)[0]), alone) == 0.0
 
 
 def test_group_rejects_mixed_cells():
-    a = _ctxs({'model_type': 'vanilla', 'head': 'seq2seq', 'objective': 'erm'}, n=1)
-    b = _ctxs({'model_type': 'tropical', 'head': 'seq2seq', 'objective': 'erm'}, n=1)
+    a = _ctxs({'model_type': 'vanilla', 'head': 'seq2seq', 'fishr_lambda': 0.0}, n=1)
+    b = _ctxs({'model_type': 'tropical', 'head': 'seq2seq', 'fishr_lambda': 0.0}, n=1)
     with pytest.raises(ValueError, match='one cell'):
         train.run_group(a + b)

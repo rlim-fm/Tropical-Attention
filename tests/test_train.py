@@ -15,7 +15,7 @@ def test_run_reports_declared_metrics(campaign):
     base['data'].update(train_lengths=[4, 5], ood_lengths=[6], n_per_length=16,
                         n_eval_per_length=8, curve_eval_limit=4)
     base['optim'].update(epochs=1, batch_size=8)
-    ctx = RunContext(base=base, cell={'model_type': 'tropical', 'head': 'pointer', 'objective': 'erm'},
+    ctx = RunContext(base=base, cell={'model_type': 'tropical', 'head': 'pointer', 'fishr_lambda': 0.0},
                      seeds={'data': 0, 'init': 0, 'sampler': 0}, seed_index=0)
     result = run(ctx)
     assert not result.diverged
