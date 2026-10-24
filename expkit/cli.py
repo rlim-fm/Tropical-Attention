@@ -12,6 +12,7 @@
     expkit clear    --config X [--only ...] [--yes]
     expkit submit   --config X [--stage tune|run] [--campaigns a/b,c/d] --cores 32
                     [--gpus 1 --per-gpu 4 --gpu-type pro6000 --cpus-per-gpu 40]
+                    [--lanes 'mixed:pro6000:2:40:120:12 main:cpu:4:32::12:0.3']
                     [--cpu-partition main --cpu-cores 32] [--group-seeds]
                     [--report] [--plan]                                      # Slurm
 
@@ -231,18 +232,19 @@ def cmd_clear(args, cfg):
 
 
 def slurm_settings(cfg):
-    """A campaign's ``slurm:`` block: ``device`` ('gpu' or 'cpu') and ``cost``.
+    """A campaign's ``slurm:`` block: ``device`` ('gpu', 'cpu' or 'any') and ``cost``.
 
-    ``device: cpu`` sends the campaign to the CPU queue even when ``submit``
-    is given GPUs (small models can run as well on cores as on a shared card).
+    ``device: cpu`` sends the campaign to a CPU lane even when ``submit`` is
+    given GPUs (small models can run as well on cores as on a shared card), and
+    ``device: any`` to whichever lane, GPU or CPU, would finish it soonest.
     ``cost`` (default 1) is the relative time one of its runs takes; campaigns
     are submitted in order of cost x missing runs, longest first, so the long
     poles start before the short ones fill the queue.
     """
     block = cfg.extra.get('slurm') or {}
     device = str(block.get('device', 'gpu')).lower()
-    if device not in ('gpu', 'cpu'):
-        raise SystemExit(f'{cfg.campaign}: slurm.device must be gpu or cpu, not {device!r}')
+    if device not in ('gpu', 'cpu', 'any'):
+        raise SystemExit(f'{cfg.campaign}: slurm.device must be gpu, cpu or any, not {device!r}')
     return device, float(block.get('cost', 1))
 
 
@@ -286,18 +288,36 @@ def cmd_submit(args, cfg):
             ids[name] = running
             continue
         device, cost = slurm_settings(c)
-        todo.append((-cost * missing, order, name, job, device if args.gpus else 'cpu'))
-    for _, _, name, job, device in sorted(todo):
-        if device == 'gpu':
-            devices = ['--gpus', ','.join(str(i) for i in range(args.gpus)),
-                       '--per-gpu', str(args.per_gpu)]
-            options = dict(partition=args.partition, gpus=args.gpus, gpu_type=args.gpu_type,
-                           cpus_per_gpu=args.cpus_per_gpu)
+        todo.append((-cost * missing, order, name, job, device))
+    lanes = slurm.parse_lanes(args.lanes or os.environ.get('EXPKIT_LANES'))
+    if all(slurm.is_cpu(lane) for lane in lanes):
+        lanes.append(slurm.Lane(args.partition, args.gpu_type, 1, args.cpus_per_gpu, None,
+                                args.per_gpu, 1.0))
+    on = {'gpu': [i for i, lane in enumerate(lanes) if not slurm.is_cpu(lane)],
+          'cpu': [i for i, lane in enumerate(lanes) if slurm.is_cpu(lane)]}
+    on['any'] = on['gpu'] + on['cpu']
+    if not on['cpu']:
+        # Only `device: cpu` campaigns use it; `any` stays on the GPU lanes.
+        cores = args.cpu_cores or args.cores
+        lanes.append(slurm.Lane(cpu_partition, 'cpu', 1, cores, None, cores, 1.0))
+        on['cpu'] = [len(lanes) - 1]
+    filled = [[0.0] * lane.slots for lane in lanes]
+    for load, _, name, job, device in sorted(todo):
+        lane = slurm.assign_lane(lanes, filled, -load, on[device]) if args.gpus else None
+        if lane is None:                   # no GPUs at all: every campaign on args.cores
             cores = args.cores
-        else:
-            cores = args.cpu_cores or args.cores
             devices = ['--cpu-workers', str(cores)]
-            options = dict(partition=cpu_partition if args.gpus else args.partition)
+            options = dict(partition=args.partition)
+        elif slurm.is_cpu(lane):
+            cores = lane.cpus_per_gpu
+            devices = ['--cpu-workers', str(lane.per_gpu)]
+            options = dict(partition=lane.partition, mem_gb=lane.mem_gb)
+        else:
+            cores = args.cores
+            devices = ['--gpus', ','.join(str(i) for i in range(args.gpus)),
+                       '--per-gpu', str(lane.per_gpu)]
+            options = dict(partition=lane.partition, gpus=args.gpus, gpu_type=lane.gpu_type,
+                           cpus_per_gpu=lane.cpus_per_gpu, mem_gb=lane.mem_gb)
         run_args = [args.stage, '--config', config_arg, *devices,
                     *(['--group-seeds'] if args.group_seeds else []),
                     *(['--profile', name] if name != 'default' else [])]
@@ -408,6 +428,11 @@ def parser():
     s.add_argument('--cpus-per-gpu', type=int, default=None,
                    help='ask --cpus-per-gpu=K instead of -n --cores (GPU jobs)')
     s.add_argument('--partition', default=None)
+    s.add_argument('--lanes', default=None,
+                   help="job shapes to spread campaigns over, e.g. "
+                        "'mixed:pro6000:2:40:120:12 main:cpu:4:32::12:0.3' (expkit.slurm.parse_lanes); "
+                        'GPU lanes replace --partition, --gpu-type, --cpus-per-gpu and --per-gpu, '
+                        'a CPU lane --cpu-partition and --cpu-cores')
     s.add_argument('--cpu-partition', default=None,
                    help='queue for campaigns with slurm.device: cpu, and the report jobs')
     s.add_argument('--cpu-cores', type=int, default=None,

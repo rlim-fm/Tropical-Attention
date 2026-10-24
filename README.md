@@ -149,18 +149,29 @@ so the scripts pack work onto each card in two ways:
 On Slurm each script submits **one single-node job per campaign**, longest
 first (the YAML's `slurm: {cost: ...}`). `--dependency=singleton` stops two jobs
 writing one campaign, and each report job waits on its own campaign's job. The
-defaults target the Bowdoin cluster's `mixed` queue. Its PRO6000 nodes (96 GB
-cards) take your full allowance there, 2 cards + 80 cores + 500 GB, as two jobs
-of 1 card + 40 cores + 120 GB. Two campaigns run at a time, each with all 12
-cells (60 models) training at once on its card. The `gpu` queue caps you at 4 cores in total, too few
-to feed a card. A campaign with `slurm: {device: cpu}` goes to the `main` queue
-(150 cores per user) instead.
+defaults use both of the Bowdoin cluster's GPU queues, whose per-user limits stack.
+The `mixed` queue's PRO6000 nodes (96 GB cards) take your full allowance there,
+2 cards + 80 cores + 500 GB, as two jobs of 1 card + 40 cores + 120 GB, each with
+all 12 cells (60 models) training at once on its card. The `gpu` queue allows 3
+cards but only 4 cores and 40 GB in total, so it runs three thin jobs: two on a
+PRO6000 with 1 core + 13 GB and one on the A100 with 2 cores + 14 GB, each with
+`GPU_Q_PER_GPU` (4) workers. The `main` queue (150 cores per user) adds four
+CPU jobs of 32 cores, each with 12 workers. Nine campaigns run at a time.
+Campaigns are assigned to these lanes (`EXPKIT_LANES`, see `expkit/slurm.py`),
+longest first, each to the job slot that would finish it soonest given the
+lane's speed (`CPU_SPEED`, 0.3 of a `mixed` job until calibrated). The set
+tasks are `slurm: {device: any}` and may take any lane. The graph tasks are
+`device: gpu`, and `device: cpu` pins a campaign to `main`. One campaign is one
+job, so the longest campaign (FloydWarshall, SCC) sets the finishing time
+whatever else is free.
 
 Benchmark before choosing devices. Time a few epochs of Knapsack and
 FloydWarshall in an interactive job (`srun -p mixed --gres=gpu:pro6000:1
 --cpus-per-gpu=40 --pty bash`) at a few `PER_GPU` values, with and without MPS
-and grouping, and compare against `main` with 2 threads per run. Then mark the
-campaigns that run as fast on cores `device: cpu`.
+and grouping, and compare against `main` with 2 threads per run. Then set
+`CPU_SPEED` to a CPU job's throughput over a `mixed` job's. Seeds per hour from
+the `✓` lines in `slurm/*.out` work as well. Same-seed CPU and GPU runs start
+from the same weights and batch order and differ only in rounding.
 
 The graph tasks (FloydWarshall, SCC) are the memory-heavy ones. L nodes are
 L² tokens, and tropical attention holds a B·H·S²·d_k tensor, so their batches
@@ -172,13 +183,18 @@ are small (`batch_size: 8`, `eval_batch_size: 8`).
 | `PER_GPU` | 12 | concurrent workers per GPU (each a seed group with `GROUP_SEEDS=1`; 12 = every cell of a campaign) |
 | `GROUP_SEEDS` | 1 | `1`: train each cell's seeds together |
 | `GPU_TYPE` | pro6000 | the card a GPU job asks for (`--gres=gpu:<type>:N`) |
-| `CPUS_PER_GPU` | 40 | cores a GPU job asks for, per card (`--cpus-per-gpu`) |
-| `CPU_CORES` | 32 | cores of a `device: cpu` campaign's job, or of every job when `GPUS=0` |
+| `CPUS_PER_GPU` | 40 | cores a `mixed` GPU job asks for, per card (`--cpus-per-gpu`) |
+| `GPU_Q_PER_GPU` | 4 | concurrent workers per card in the `gpu` queue's jobs |
+| `EXPKIT_LANES` | mixed + gpu + main (above) | job shapes, `partition:gpu_type:slots:cpus_per_gpu:mem_gb:per_gpu[:speed]` (gpu_type `cpu`: a CPU job), space-separated |
+| `CPU_CORES` | 32 | cores of a CPU-lane job, or of every job when `GPUS=0` |
+| `CPU_JOBS` | 4 | CPU-lane jobs at once in `main` |
+| `CPU_JOB_WORKERS` | 12 | concurrent workers in a CPU-lane job (12 = every cell of a campaign) |
+| `CPU_SPEED` | 0.3 | a CPU-lane job's throughput relative to a `mixed` GPU job |
 | `CPU_WORKERS` | 4 | concurrent CPU runs locally when there is no GPU |
 | `LOCAL` | unset | `1`: run here, campaign after campaign, instead of submitting |
 | `CAMPAIGNS` / `PROFILE` | all | which campaigns, or one profile such as `dry_run` |
-| `EXPKIT_PARTITION` | mixed | partition of the GPU jobs |
-| `EXPKIT_CPU_PARTITION` | main | partition of the `device: cpu` and report jobs |
+| `EXPKIT_PARTITION` | mixed | partition of the first GPU lane |
+| `EXPKIT_CPU_PARTITION` | main | partition of the CPU lane and the report jobs |
 | `EXPKIT_MPS` | 1 | run a CUDA MPS daemon inside each GPU job |
 | `EXPKIT_SBATCH_ARGS` | unset | extra sbatch flags, e.g. `--time=12:00:00 --account=X` |
 | `EXPKIT_GB_PER_CORE` | 3 | `--mem` = cores × this |

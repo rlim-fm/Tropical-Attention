@@ -63,11 +63,12 @@ headline: ood_len_f1
 replay_curves: [train_loss, fishr_penalty, id_val_loss]
 require_frozen: false
 
-# `expkit submit` (scripts/run_all.sh): where each campaign's job goes, and how long
+# `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
 # one of its runs takes relative to the others (the longest are submitted first).
-# Set `device: cpu` on a campaign (or here, for all) to send it to the `main`
-# queue's cores instead of a GPU; benchmark first (see scripts/_settings.sh).
-slurm: {device: gpu, cost: 1}
+# `any`: whichever lane (GPU queues or `main`'s cores) would finish it soonest;
+# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh). The set tasks' tiny
+# models train about as well on cores; the graph tasks' L^2 tokens stay on cards.
+slurm: {device: any, cost: 1}
 
 axes:
   # `data` per campaign: Table 5's OOD value range and perturbative noise range.
@@ -101,12 +102,12 @@ axes:
     FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
                            data: {ood_lengths: [12, 16], ood_value_range: [16, 30], ood_noise_range: [1, 10]},
                            optim: {batch_size: 8, eval_batch_size: 8}},
-                    slurm: {cost: 15}}         # 12.5x the steps, of L^2 tokens each
+                    slurm: {device: gpu, cost: 15}}   # 12.5x the steps, of L^2 tokens each
     # SCC: value_range is the edge probability; noise flips each edge with ood_noise_prob.
     SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
                  data: {ood_lengths: [12, 16], ood_value_range: 0.1, ood_noise_range: null},
                  optim: {batch_size: 8, eval_batch_size: 8}},
-          slurm: {cost: 15}}
+          slurm: {device: gpu, cost: 15}}
 
 profiles:
   dry_run:

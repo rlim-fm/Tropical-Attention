@@ -109,3 +109,45 @@ def test_slurm_settings_rejects_an_unknown_device(tmp_path):
     cfg_path = write_config(tmp_path / 'quad.yaml', slurm={'device': 'tpu'})
     with pytest.raises(SystemExit, match='slurm.device'):
         cli.slurm_settings(load_config(cfg_path))
+
+
+def test_submit_spreads_gpu_campaigns_over_lanes(tmp_path, monkeypatch, capsys):
+    axes = {'noise': {'a': {'slurm': {'cost': 10}}, 'b': {'base': {'offset': 1.0}, 'slurm': {'cost': 4}},
+                      'c': {'base': {'offset': 2.0}, 'slurm': {'cost': 3}}}}
+    cfg_path = write_config(tmp_path / 'quad.yaml', axes=axes)
+    monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
+    run('submit', '--config', cfg_path, '--gpus', '1', '--plan',
+        '--lanes', 'mixed:pro6000:1:40::12 gpu:a100:1:2:14:4')
+    a, b, c = [l for l in capsys.readouterr().out.splitlines() if l.startswith('$ sbatch')]
+    assert '-p mixed' in a and '--gres=gpu:pro6000:1' in a and '--per-gpu 12' in a
+    assert '-p gpu' in b and '--gres=gpu:a100:1' in b and '--cpus-per-gpu=2' in b
+    assert '--mem=14G' in b and '--per-gpu 4' in b
+    assert '-p gpu' in c                               # 4 + 3 < 10: the gpu lane is still emptier
+
+
+def test_parse_lanes_rejects_a_short_spec():
+    with pytest.raises(SystemExit, match='lane'):
+        slurm.parse_lanes('mixed:pro6000:2')
+
+
+def test_submit_sends_any_campaigns_to_cpu_lanes_too(tmp_path, monkeypatch, capsys):
+    axes = {'noise': {'a': {'slurm': {'cost': 10, 'device': 'any'}},
+                      'b': {'base': {'offset': 1.0}, 'slurm': {'cost': 4, 'device': 'any'}},
+                      'c': {'base': {'offset': 2.0}, 'slurm': {'cost': 3, 'device': 'gpu'}}}}
+    cfg_path = write_config(tmp_path / 'quad.yaml', axes=axes)
+    monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
+    run('submit', '--config', cfg_path, '--gpus', '1', '--plan',
+        '--lanes', 'mixed:pro6000:1:40::12 main:cpu:2:32::12:0.5')
+    a, b, c = [l for l in capsys.readouterr().out.splitlines() if l.startswith('$ sbatch')]
+    assert '-p mixed' in a                             # 10 on the card beats 20 on cores
+    assert '-p main' in b and '-n 32' in b and '--cpu-workers 12' in b and '--gres' not in b
+    assert '-p mixed' in c                             # device: gpu never takes a CPU lane
+
+
+def test_assign_lane_counts_slots_not_lane_capacity():
+    fast, slow = slurm.Lane('mixed', 'pro6000', 1, 40, None, 12, 1.0), \
+        slurm.Lane('main', 'cpu', 10, 32, None, 12, 0.2)
+    filled = [[0.0], [0.0] * 10]
+    assert slurm.assign_lane([fast, slow], filled, 10) is fast      # 10 vs 50 on one CPU job
+    assert slurm.assign_lane([fast, slow], filled, 10) is fast      # 20 vs 50
+    assert slurm.assign_lane([fast, slow], filled, 1) is slow       # 21 vs 5
