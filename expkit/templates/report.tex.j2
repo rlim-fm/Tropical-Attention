@@ -2,9 +2,11 @@
 <# Every figure and table has a caption and a label; prose cites with \autoref. #>
 \documentclass[10pt]{article}
 \usepackage[margin=2.2cm]{geometry}
-\usepackage{booktabs,longtable,graphicx,makecell,array}
+\usepackage{booktabs,longtable,graphicx,array}
 \usepackage[hidelinks]{hyperref}
 \setlength{\tabcolsep}{4pt}
+<# A two-line left-aligned cell without makecell, which the cluster's TeX lacks. #>
+\newcommand{\stackcell}[1]{\begin{tabular}[t]{@{}l@{}}#1\end{tabular}}
 <% macro facet_cols(row, names) %><% for f in names %><< row[f]|level >> & <% endfor %><% endmacro %>
 <% macro facet_head(names) %><% for f in names %>\texttt{<< f|escape >>} & <% endfor %><% endmacro %>
 <% macro colspec(n, rest) %><% for _ in range(n) %>l<% endfor %><< rest >><% endmacro %>
@@ -112,7 +114,7 @@ contrast (within) & difference & 95\% CI & $p$ & \\
 \midrule
 \endhead
 <% for r in s.paired %>
-\makecell[l]{<< r.contrast|escape >>\\\footnotesize <% for f in factors if f in r and f not in r.contrast %><< f|escape >>=<< r[f]|level >> <% endfor %>} & << r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >> & <% if r.p is not none and r.p < alpha %>*<% endif %>\\
+\stackcell{<< r.contrast|escape >>\\\footnotesize <% for f in factors if f in r and f not in r.contrast %><< f|escape >>=<< r[f]|level >> <% endfor %>} & << r.estimate|num >> & [<< r.ci_low|num(3) >>, << r.ci_high|num(3) >>] & << r.p|pvalue >> & <% if r.p is not none and r.p < alpha %>*<% endif %>\\
 <% endfor %>
 \bottomrule
 \end{longtable}
