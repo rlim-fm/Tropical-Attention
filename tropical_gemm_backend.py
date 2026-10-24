@@ -98,8 +98,7 @@ def maxplus_backend_status() -> str:
 def reset_backend_cache() -> None:
     """Clear cached imports. Primarily useful for tests that monkeypatch modules."""
 
-    _load_tropical_gemm_pytorch.cache_clear()
-    _load_tropical_gemm_core.cache_clear()
+    _import.cache_clear()
 
 
 def _validate_maxplus_inputs(a: torch.Tensor, b: torch.Tensor) -> None:
@@ -142,14 +141,34 @@ def _backend_preference() -> str:
     return aliases[raw]
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=None)
+def _import(name: str):
+    """The module, or the ImportError importing it raised.
+
+    lru_cache remembers results but not exceptions, so a missing module is
+    returned rather than raised: otherwise every max-plus call would search
+    sys.path for it again.
+    """
+
+    try:
+        return importlib.import_module(name)
+    except ImportError as exc:
+        return exc
+
+
+def _load(name: str):
+    module = _import(name)
+    if isinstance(module, ImportError):
+        raise module.with_traceback(None)   # don't let the cached traceback grow per raise
+    return module
+
+
 def _load_tropical_gemm_pytorch():
-    return importlib.import_module("tropical_gemm.pytorch")
+    return _load("tropical_gemm.pytorch")
 
 
-@lru_cache(maxsize=1)
 def _load_tropical_gemm_core():
-    return importlib.import_module("tropical_gemm")
+    return _load("tropical_gemm")
 
 
 def _tropical_gemm_maxplus_matmul(
