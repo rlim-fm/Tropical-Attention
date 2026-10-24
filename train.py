@@ -31,8 +31,8 @@ from torch.func import functional_call, stack_module_state, vmap
 
 from expkit.api import RunContext, RunResult
 from fishr import FishrPenalty, gradient_variance, per_sample_head_grads
-from models import build_model
-from tasks import make_envs, ood_noise_settings, ood_value_range
+from models import build_model, set_query_chunk
+from tasks import make_envs, ood_noise_settings, ood_value_range, tokens_per_length
 
 
 def _optimizer(model, lr):
@@ -99,6 +99,54 @@ def _splits(ctx):
                                                          data.get('ood_value_range'))),
         'ood_noise': make_envs(task, train_lengths, n_eval, seed, 'ood_noise', **ood_noise_settings(data)),
     }
+
+
+def _far_envs(ctx):
+    """The far length test, built only once training is done: {length: (X, Y)} on the CPU.
+
+    ``data.ood_far_lengths`` are scored per length only (``ood_len_*_L<length>``), so
+    the pooled ``ood_len_*`` stays on ``ood_lengths``. Each length gets about
+    ``data.ood_far_tokens`` tokens of instances (at least ``data.ood_far_min``, at
+    most ``n_eval_per_length``): the longer the sequences, the fewer of them.
+    """
+    task, data = ctx.base['task'], ctx.base['data']
+    n_eval = int(data['n_eval_per_length'])
+    budget, least = int(data.get('ood_far_tokens', 0)), int(data.get('ood_far_min', 16))
+    envs = {}
+    for L in [int(L) for L in data.get('ood_far_lengths') or []]:
+        n = min(n_eval, max(least, budget // tokens_per_length(task['name'], L)))
+        envs.update(make_envs(task, [L], n, ctx.seeds['data'], 'ood_far'))
+    return envs
+
+
+def _far_batches(ctx, envs, models=1):
+    """{length: (eval batch, query chunk)} that keep a far-length batch near
+    ``optim.eval_tokens`` tokens and an attention block near ``optim.eval_block``
+    entries (query x key), for ``models`` stacked models."""
+    optim, name = ctx.base['optim'], ctx.base['task']['name']
+    tokens, block = int(optim.get('eval_tokens', 2 ** 15)), int(optim.get('eval_block', 2 ** 20))
+    out = {}
+    for L in envs:
+        S = tokens_per_length(name, L)
+        out[L] = (max(1, tokens // (S * models)), max(16, block // S))
+    return out
+
+
+def _evaluate_far(evaluate_one, model, envs, batches):
+    """``{length: (f1, exact)}`` over the far lengths, each in its own batch size and
+    query chunk; ``evaluate_one(envs, batch_size)`` returns ``evaluate``'s per-length dict
+    (or a list of them, one per stacked model)."""
+    out = None
+    for L, env in envs.items():
+        bs, chunk = batches[L]
+        set_query_chunk(model, chunk)
+        res = evaluate_one({L: env}, bs)
+        if isinstance(res, dict):
+            out = {**(out or {}), **res}
+        else:
+            out = [{**(o or {}), **r} for o, r in zip(out or [None] * len(res), res)]
+    set_query_chunk(model, None)
+    return out
 
 
 def _model(ctx, input_dim):
@@ -204,6 +252,11 @@ def run(ctx: RunContext) -> RunResult:
     ood_m, ood_per_length = evaluate(model, ood_len, eval_bs, device)
     val_m = evaluate(model, ood_val, eval_bs, device)[0]
     noise_m = evaluate(model, ood_noise, eval_bs, device)[0]
+    del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
+    far = _far_envs(ctx)
+    if far:
+        ood_per_length = {**ood_per_length, **_evaluate_far(
+            lambda envs, b: evaluate(model, envs, b, device)[1], model, far, _far_batches(ctx, far))}
     metrics = _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, best_val)
     return RunResult(metrics=metrics, curves=curves, steps=step)
 
@@ -412,13 +465,23 @@ def run_group(ctxs):
     ood_ms = evaluate_group(forward, state, ood_len, eval_bs)
     val_ms = evaluate_group(forward, state, ood_val, eval_bs)
     noise_ms = evaluate_group(forward, state, ood_noise, eval_bs)
+    del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
+    far = [_far_envs(ctx) for ctx in ctxs]
+    far_ms = [{} for _ in range(S)]
+    if far[0]:
+        envs = {L: (torch.stack([f[L][0] for f in far]).to(device),
+                    torch.stack([f[L][1] for f in far]).to(device)) for L in far[0]}
+        del far
+        far_ms = _evaluate_far(lambda e, b: [r[1] for r in evaluate_group(forward, state, e, b)],
+                               skeleton, envs, _far_batches(first, envs, S))
     for i in range(S):
         if results[i] is not None:
             continue
         if best_epoch[i] < 0:
             results[i] = RuntimeError('no epoch had a finite validation loss to select')
             continue
-        metrics = _metrics(id_ms[i][0], ood_ms[i][0], ood_ms[i][1], val_ms[i][0], noise_ms[i][0],
+        metrics = _metrics(id_ms[i][0], ood_ms[i][0], {**ood_ms[i][1], **far_ms[i]},
+                           val_ms[i][0], noise_ms[i][0],
                            curves[i],
                            best_epoch[i], best_val[i])
         results[i] = RunResult(metrics=metrics, curves=curves[i], steps=step)

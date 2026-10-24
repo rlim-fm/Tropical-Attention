@@ -61,17 +61,23 @@ class VanillaAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, d_model = x.shape
         V = self._heads(x, self.value_linear)
-        scores = self.scores(x, x)  # [B,H,S,S]
-        
-        # aggregator
-        if self.aggregator == 'softmax':
-            attn_weights = F.softmax(scores, dim=-1)
-        elif self.aggregator == 'adaptive':
-            attn_weights = adaptive_temperature_softmax(scores)
-        else:
-            raise ValueError(f"Unknown aggregator {self.aggregator}")
-        
-        context = torch.matmul(attn_weights, V)  # [B,H,S,Dk]
+        K = self._heads(x, self.key_linear)
+        Q = self._heads(x, self.query_linear)
+        # Rows of the attention matrix are independent, so long sequences go through
+        # in blocks of queries (``set_query_chunk``) without the full [S, S] matrix.
+        chunk = getattr(self, 'query_chunk', None) or seq_len
+        parts = []
+        for start in range(0, seq_len, chunk):
+            scores = torch.matmul(Q[:, :, start:start + chunk], K.transpose(-2, -1)) / math.sqrt(self.d_k)
+            # aggregator
+            if self.aggregator == 'softmax':
+                attn_weights = F.softmax(scores, dim=-1)
+            elif self.aggregator == 'adaptive':
+                attn_weights = adaptive_temperature_softmax(scores)
+            else:
+                raise ValueError(f"Unknown aggregator {self.aggregator}")
+            parts.append(torch.matmul(attn_weights, V))  # [B,H,chunk,Dk]
+        context = torch.cat(parts, dim=2) if len(parts) > 1 else parts[0]
         context = context.permute(0,2,1,3).reshape(bsz, seq_len, d_model)
         output = self.out(context)
         return output
@@ -305,14 +311,22 @@ class TropicalAttention(nn.Module):
         q = self._project(x, self.query_linear, self.query_trop)
         k = self._project(x, self.key_linear, self.key_trop)
         v = self._project(x, self.value_linear, self.value_trop)
-        attn_scores = self._scores(q, k)  # [B, S, S]
+        # In blocks of queries when ``set_query_chunk`` asks (rows are independent);
+        # the scores are then not returned.
+        chunk = getattr(self, 'query_chunk', None) or seq_len
+        parts = []
+        for start in range(0, seq_len, chunk):
+            attn_scores = self._scores(q[:, start:start + chunk], k)  # [B, chunk, S]
 
-        # Compute context using tropical multiplication and aggregation
-        if self.use_tropical_metric or not self.use_logsumexp:
-            context = maxplus_matmul(attn_scores, v)  # [B, S, D]
-        else:
-            sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, S, S, D]
-            context = torch.logsumexp(sum_sv, dim=2)
+            # Compute context using tropical multiplication and aggregation
+            if self.use_tropical_metric or not self.use_logsumexp:
+                parts.append(maxplus_matmul(attn_scores, v))  # [B, chunk, D]
+            else:
+                sum_sv = attn_scores.unsqueeze(-1) + v.unsqueeze(1)  # [B, chunk, S, D]
+                parts.append(torch.logsumexp(sum_sv, dim=2))
+        context = torch.cat(parts, dim=1) if len(parts) > 1 else parts[0]
+        if len(parts) > 1:
+            attn_scores = None
         
         # Reshape context back to [batch_size, seq_len, d_model]
         context = context.reshape(batch_size, self.n_heads, seq_len, self.d_k).permute(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
@@ -540,6 +554,14 @@ class TransformerEncoder(nn.Module):
         if self.pre_norm:
             x = self.last_norm(x)
         return x
+
+def set_query_chunk(model: nn.Module, chunk) -> None:
+    """Make every attention module of ``model`` go through queries ``chunk`` at a time
+    (None: all at once). Same output, O(chunk * S) memory instead of O(S^2)."""
+    for module in model.modules():
+        if isinstance(module, (VanillaAttention, TropicalAttention)):
+            module.query_chunk = chunk
+
 
 class Seq2SeqHead(nn.Module):
     """One logit per token from a linear map of its encoding: [B, S]."""
