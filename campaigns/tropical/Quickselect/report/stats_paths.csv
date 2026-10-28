@@ -1,0 +1,9 @@
+metric,path,reason
+ood_len_f1,parametric,values away from the metric bounds
+ood_len_exact,parametric,values away from the metric bounds
+ood_val_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
+ood_val_exact,parametric,values away from the metric bounds
+ood_noise_f1,parametric,values away from the metric bounds
+ood_noise_exact,parametric,values away from the metric bounds
+id_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
+id_exact,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"

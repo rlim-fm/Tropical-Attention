@@ -1,0 +1,14 @@
+campaign,tuned,tune_verdict,blocks,reviews,approved,stored,expected,diverged
+Knapsack,,--,0,0,False,240,240,0
+SubsetSumDecision,,--,0,0,False,240,240,0
+MaxSubsetSum,,--,0,0,False,240,240,0
+FractionalKnapsack,,--,0,0,False,240,240,0
+MinCoinChange,,--,0,0,False,240,240,0
+Quickselect,,--,0,0,False,240,240,0
+BalancedPartition,,--,0,0,False,220,240,0
+BinPacking,,--,0,0,False,216,240,0
+ConvexHull,,--,0,0,False,240,240,0
+ThreeSumDecision,,--,0,0,False,240,240,0
+LIS,,--,0,0,False,240,240,0
+FloydWarshall,,--,0,0,False,240,240,0
+SCC,,--,0,0,False,240,240,0
