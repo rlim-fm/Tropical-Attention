@@ -6,7 +6,6 @@ import pandas as pd
 from expkit import cli, grand, slurm
 from expkit.config import load_config
 from expkit.tests.helpers import write_config
-from expkit.tests.test_tune import TUNE
 
 AXES = {'noise': {'clean': {}, 'noisy': {'base': {'offset': 1.0}}}}
 
@@ -36,26 +35,11 @@ def test_grand_report_covers_every_campaign(tmp_path, campaigns_tmp):
     assert os.path.exists(os.path.join(out, 'loss_clean.png'))
 
 
-def test_grand_report_without_results_still_lists_the_tuning(tmp_path, campaigns_tmp):
-    cfg_path = write_config(tmp_path / 'quad.yaml', axes=AXES, tune=TUNE)
-    run('tune', '--config', cfg_path, '--profile', 'clean')
-    run('grand', '--config', cfg_path, '--no-pdf')
-    status = pd.read_csv(os.path.join(grand.grand_dir(load_config(cfg_path)), 'grand_status.csv'))
-    clean = status[status['campaign'] == 'clean'].iloc[0]
-    assert clean['tune_verdict'] == 'review' and clean['tuned'] == 'offset=0'
-    assert status[status['campaign'] == 'noisy'].iloc[0]['tune_verdict'] == '--'
-
-
 def test_submit_queues_the_grand_report_after_every_job(tmp_path, monkeypatch, capsys):
-    cfg_path = write_config(tmp_path / 'quad.yaml', axes=AXES, tune=TUNE)
+    cfg_path = write_config(tmp_path / 'quad.yaml', axes=AXES)
     monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
     run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--grand')
     out = capsys.readouterr().out.replace("'", '')
     grand_line = [line for line in out.splitlines() if '--job-name=xk-quad-grand' in line]
     assert len(grand_line) == 1
     assert '--dependency=afterany:<xk-quad-clean>:<xk-quad-noisy>' in grand_line[0]
-
-    run('submit', '--stage', 'tune', '--config', cfg_path, '--cores', '4', '--plan', '--grand')
-    out = capsys.readouterr().out.replace("'", '')
-    grand_line = [line for line in out.splitlines() if '--job-name=xk-quad-grand' in line]
-    assert '--dependency=afterany:<xk-quad-clean-tune>:<xk-quad-noisy-tune>' in grand_line[0]

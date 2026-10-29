@@ -47,18 +47,18 @@ Click a campaign for its <% if lengths %>length curves<% else %>figures<% endif 
 \clearpage
 <% endif %>
 \section{Status}
-\autoref{tab:status} lists every campaign: the values its search tuned, that search's verdict (\texttt{tune/report/}), whether \texttt{frozen.yaml} is approved, and how much of its grid is stored.
+\autoref{tab:status} lists how much of every campaign's grid is stored.
 << n_results >> of << status|length >> campaigns have grid results.
 
 {\small
-\begin{longtable}{lllrrlrr}
-\caption{Per campaign: tuned values, tuning-report verdict (blocks/reviews), approval, grid runs stored/expected and diverged.}\label{tab:status}\\
+\begin{longtable}{lrr}
+\caption{Per campaign: grid runs stored/expected, and diverged.}\label{tab:status}\\
 \toprule
-campaign & tuned & verdict & blk & rev & approved & runs & div.\\
+campaign & runs & diverged\\
 \midrule
 \endhead
 <% for r in status %>
-<< r.campaign|escape >> & << r.tuned|escape >> & << r.tune_verdict|escape >> & << r.blocks >> & << r.reviews >> & << 'yes' if r.approved else '\\textbf{no}' >> & << r.stored >>/<< r.expected >> & << r.diverged >>\\
+<< r.campaign|escape >> & << r.stored >>/<< r.expected >> & << r.diverged >>\\
 <% endfor %>
 \bottomrule
 \end{longtable}
@@ -115,6 +115,6 @@ The same blocks for every other metric; the full tables, with confidence interva
 <% endif %>
 <% else %>
 \section{Results}
-No campaign has grid results yet: approve the tuned campaigns, then run \texttt{scripts/run\_all.sh}.
+No campaign has grid results yet: run \texttt{scripts/run\_all.sh}.
 <% endif %>
 \end{document}

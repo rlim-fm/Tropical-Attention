@@ -51,47 +51,32 @@ def read_doc(path):
         return yaml_load(fh)
 
 
-def freeze(cfg, *, tuned=None, evidence=None, root=None, report=None, verdict=None):
+def freeze(cfg, *, tuned=None, evidence=None, root=None):
     """Write ``frozen.yaml``: the config's base with ``tuned`` applied, unapproved.
 
-    ``evidence`` is free-form (a report path, a search summary) and is stored
-    so the approver can find what justified the values. ``report`` and
-    ``verdict`` come from the tuning report; a ``do not approve`` verdict makes
-    ``approve`` refuse without ``force``.
+    ``evidence`` is free-form (a report path, a note) and is stored so the
+    approver can find what justified the values.
     """
     base = with_overrides(cfg.base, tuned or {})
     sha, dirty = code_version()
     doc = {'experiment': cfg.experiment, 'campaign': cfg.campaign, 'profile': cfg.profile,
            'approved': False, 'frozen_hash': base_hash(base, cfg.optional),
            'tuned': dict(tuned or {}), 'base': base, 'evidence': evidence,
-           **({'report': report, 'verdict': verdict} if report else {}),
            'provenance': {'created': now(), 'git_sha': sha, 'git_dirty': dirty}}
     return write_doc(campaign.frozen_path(cfg, root), doc), doc
 
 
-BLOCKING_VERDICT = 'do not approve'
-
-
-def approve(cfg, overrides=None, root=None, force=False):
-    """Mark the file approved, optionally changing tuned values first.
-
-    A file whose tuning report says ``do not approve`` is refused unless
-    ``force``, or unless ``overrides`` replace the values the report judged.
-    """
+def approve(cfg, overrides=None, root=None):
+    """Mark the file approved, optionally changing tuned values first."""
     path = campaign.frozen_path(cfg, root)
     doc = read_doc(path)
     if doc is None:
         raise SystemExit(f'{path} does not exist; write it first:\n'
                          f'    expkit freeze {campaign.cli_flags(cfg, root)}')
-    if doc.get('verdict') == BLOCKING_VERDICT and not (force or overrides):
-        raise SystemExit(f'{path}: the tuning report says {BLOCKING_VERDICT!r}. Read '
-                         f'{doc.get("report")}; fix the search, or pass --force to approve anyway.')
     if overrides:
         doc['base'] = with_overrides(doc['base'], overrides)
         doc['tuned'] = {**(doc.get('tuned') or {}), **overrides}
         doc['overridden_at_approval'] = sorted(overrides)
-    if force and doc.get('verdict') == BLOCKING_VERDICT:
-        doc['forced_at_approval'] = True
     doc['frozen_hash'] = base_hash(doc['base'], cfg.optional)
     doc.update(approved=True, approved_at=now())
     write_doc(path, doc)

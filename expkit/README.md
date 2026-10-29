@@ -3,8 +3,8 @@
 Experiment infrastructure with nothing about any particular experiment. It
 runs a factorial grid of cells × paired seeds in parallel worker processes, into
 an append-only store. Re-running is a no-op, and a changed config becomes a new
-set of runs. A grid search over hyperparameters (`tune`) proposes a frozen
-config, and an approval gate sits before the grid spends its budget. Runs are
+set of runs. An optional approval gate (`freeze`, `approve`) can pin the base
+config before the grid spends its budget. Runs are
 reproduced by replay, never checkpointed. You get seed-paired statistics, a
 LaTeX report, and one Slurm job per campaign.
 
@@ -88,13 +88,12 @@ profiles: {dry_run: {seeds: 2, base: {optim: {epochs: 1}}}}
 |---|---|
 | `run` | trains every missing run (`--cpu-workers N`, or `--gpus 0,1 --per-gpu 2`; `--group-seeds`; `--only lr=1e-3,seed=0`; `--force`; `--plan`) |
 | `status` | for every campaign: frozen and approved?, runs stored of total, failures |
-| `tune [--plan]` | grid-searches the YAML's `tune:` block on its own seeds and store, writes `tune/tune.csv`, and freezes the best candidate, unapproved (see `expkit/tune.py`) |
 | `freeze --set k=v` / `approve` | writes `frozen.yaml` with tuned values, unapproved; `approve` after you have read the evidence |
 | `freeze --profile P --from-default` | derives a campaign from the approved default, and refuses if the profile moves a tuned value |
 | `grand [--no-pdf]` | the report over every campaign (`campaigns/<experiment>/grand/`): a colored table per combination of the non-control factors, per-campaign length and loss figures, `grand_*.csv` |
 | `replay --keys K` | retrains stored runs and fails unless their curves match exactly (`--tolerance`) |
 | `clear [--only ...] --yes` | removes runs so they retrain after a fix that leaves their keys unchanged |
-| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4 --gpu-type T --cpus-per-gpu K] [--cpu-partition P --cpu-cores N] [--group-seeds] [--grand] [--plan]` | one `sbatch` job per campaign with runs missing, longest first; `--grand` adds one grand-report job that waits on all of them |
+| `submit --cores 32 [--gpus 1 --per-gpu 4 --gpu-type T --cpus-per-gpu K] [--cpu-partition P --cpu-cores N] [--group-seeds] [--grand] [--plan]` | one `sbatch` job per campaign with runs missing, longest first; `--grand` adds one grand-report job that waits on all of them |
 
 Pass the same `--profile` to every command. It selects the campaign directory
 `campaigns/<experiment>/<campaign>/` (`frozen.yaml`, `results/`).
@@ -140,7 +139,7 @@ daemon inside each GPU job.
 
 ## Seed groups
 
-`--group-seeds` (on `run`, `tune`, `submit`) sends each cell's pending seeds to
+`--group-seeds` (on `run`, `submit`) sends each cell's pending seeds to
 one worker when the entry's module also defines `<name>_group(ctxs)`, which
 returns one `RunResult` per context (or the exception that seed failed with).
 It is for small models that leave a GPU idle: train them stacked, under
@@ -151,6 +150,4 @@ reproduces only to float tolerance (`--tolerance 1e-5`).
 
 ## Not included
 
-Search strategies beyond a grid (random, Bayesian or successive-halving
-searches), learning-rate range tests, a trainer, and checkpointing.
-`cache.ResultCache` is the piece a custom search builds on.
+Hyperparameter search, learning-rate range tests, a trainer, and checkpointing.

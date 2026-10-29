@@ -226,8 +226,8 @@ wandb/
 literature
 CLAUDE.md
 
-# expkit: run data stays on the cluster; git carries what to read and approve: frozen.yaml,
-# tune/tune.csv, and the reports (tune/report/, report/, grand/), built there by the scripts.
+# expkit: run data stays on the cluster; git carries frozen.yaml and the grand report
+# (grand/), built there by the scripts.
 campaigns/**/results/
 campaigns/**/*.aux
 campaigns/**/*.out

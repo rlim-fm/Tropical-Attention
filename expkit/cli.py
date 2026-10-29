@@ -2,15 +2,13 @@
 
     expkit run      --config X [--profile P] [--cpu-workers N | --gpus 0,1 --per-gpu 2]
                     [--group-seeds] [--only lr=0.01,seed=0] [--keys K,...] [--force] [--plan]
-    expkit tune     --config X [--profile P] [--cpu-workers N | --gpus ...] [--plan]
-                    # grid search per the `tune:` block -> frozen.yaml, unapproved
     expkit status   --config X                       # every campaign: frozen? stored? failed?
     expkit freeze   --config X [--set k=v ...] [--evidence PATH] | --from-default
     expkit approve  --config X [--set k=v ...]
     expkit grand    --config X [--no-pdf]             # the report over every campaign
     expkit replay   --config X --keys K | --only ... [--tolerance 0]   # bit-identical check
     expkit clear    --config X [--only ...] [--yes]
-    expkit submit   --config X [--stage tune|run] [--campaigns a/b,c/d] --cores 32
+    expkit submit   --config X [--campaigns a/b,c/d] --cores 32
                     [--gpus 1 --per-gpu 4 --gpu-type pro6000 --cpus-per-gpu 40]
                     [--lanes 'mixed:pro6000:2:40:120:12 main:cpu:4:32::12:0.3']
                     [--cpu-partition main --cpu-cores 32] [--group-seeds]
@@ -89,24 +87,6 @@ def _launch(args, todo, store_root):
     return out
 
 
-def cmd_tune(args, cfg):
-    from expkit import tune
-    groups = tune.candidates(cfg)
-    store = Store(tune.store_dir(cfg, args.root))
-    specs = [s for _, _, _, group in groups for s in group]
-    todo = store.pending(specs)
-    print(f'== tune {cfg.experiment} [{cfg.campaign}]: {len(groups)} candidates, '
-          f'{len(specs)} runs, {len(specs) - len(todo)} stored, {len(todo)} to run  ({store.root})')
-    if args.plan:
-        for values, _, _, group in groups:
-            missing = len(store.pending(group))
-            print(f'   {cell_label(values)}: {len(group) - missing}/{len(group)} stored')
-        return 0
-    if todo and _launch(args, todo, store.root)['failed']:
-        return 1
-    return 0 if tune.finalize(cfg, args.root) else 1
-
-
 def _status_line(cfg, root=None):
     doc = frozen.read_doc(campaign.frozen_path(cfg, root))
     state = ('no frozen file' if doc is None else 'approved' if doc.get('approved')
@@ -119,11 +99,6 @@ def _status_line(cfg, root=None):
                 f'stored  {len(store.failures()):4d} failed')
     except SystemExit:
         line = f'{cfg.campaign:28s} {state:15s} {"":>13s} stored  {"":>4s} failed'
-    if cfg.extra.get('tune'):
-        from expkit import tune
-        tuning = tune.all_specs(cfg)
-        done = len(tuning) - len(Store(tune.store_dir(cfg, root)).pending(tuning))
-        line += f'   tune {done}/{len(tuning)}'
     return line
 
 
@@ -150,17 +125,8 @@ def cmd_freeze(args, cfg):
 
 
 def cmd_approve(args, cfg):
-    path, doc = frozen.approve(cfg, parse_assignments(args.set), root=args.root, force=args.force)
+    path, doc = frozen.approve(cfg, parse_assignments(args.set), root=args.root)
     print(f'approved {path} (frozen hash {doc["frozen_hash"]})')
-    return 0
-
-
-def cmd_tune_report(args, cfg):
-    from expkit import tune_report
-    report = tune_report.build(cfg, args.root, pdf=not args.no_pdf, n_boot=args.n_boot)
-    path = tune_report.stamp(cfg, report, args.root)
-    if path:
-        print(f'stamped {path} with verdict {report["verdict"]}')
     return 0
 
 
@@ -249,28 +215,19 @@ def cmd_submit(args, cfg):
         names = wanted
     config_arg = os.path.relpath(cfg.path, slurm.REPO)
     ids = {}                  # campaign -> its job ids, which the grand report waits on
-    tuning = args.stage == 'tune'
     cpu_partition = args.cpu_partition or os.environ.get('EXPKIT_CPU_PARTITION')
     todo = []                 # (cost, order, name, config, job name, device)
     for order, name in enumerate(names):
         c = load_config(cfg.path, None if name == 'default' else name)
-        job = slurm.job_name(c.experiment, c.campaign + ('-tune' if tuning else ''))
+        job = slurm.job_name(c.experiment, c.campaign)
         try:
-            if tuning:
-                from expkit import tune
-                missing = len(Store(tune.store_dir(c)).pending(tune.all_specs(c)))
-            else:
-                specs, _ = build_specs(c)
-                missing = len(Store(campaign.store_dir(c)).pending(specs))
+            specs, _ = build_specs(c)
+            missing = len(Store(campaign.store_dir(c)).pending(specs))
         except SystemExit as exc:
             print(f'skip {c.campaign}: {exc}')
             continue
         if not missing:
-            if tuning and not args.plan:
-                print(f'{c.campaign}: every tuning run is stored; freezing from them')
-                tune.finalize(c)
-            else:
-                print(f'skip {c.campaign}: every run is stored')
+            print(f'skip {c.campaign}: every run is stored')
             continue
         running = slurm.queued(job)
         if running:
@@ -308,7 +265,7 @@ def cmd_submit(args, cfg):
                        '--per-gpu', str(lane.per_gpu)]
             options = dict(partition=lane.partition, gpus=args.gpus, gpu_type=lane.gpu_type,
                            cpus_per_gpu=lane.cpus_per_gpu, mem_gb=lane.mem_gb)
-        run_args = [args.stage, '--config', config_arg, *devices,
+        run_args = ['run', '--config', config_arg, *devices,
                     *(['--group-seeds'] if args.group_seeds else []),
                     *(['--profile', name] if name != 'default' else [])]
         jid = slurm.submit(job, cores, run_args, plan=args.plan, **options)
@@ -316,7 +273,7 @@ def cmd_submit(args, cfg):
             ids[name] = [jid]
     waits = [str(i) for jobs in ids.values() for i in jobs]
     if args.grand:
-        # after every job above (each tune job writes its own tuning report), or at once
+        # after every job above, or at once
         slurm.submit(slurm.job_name(cfg.experiment, 'grand'), 1,
                      ['grand', '--config', config_arg],
                      dependency=('afterany:' + ':'.join(waits)) if waits else 'singleton',
@@ -347,31 +304,16 @@ def parser():
     s.add_argument('--force', action='store_true', help='re-run stored runs')
     s.add_argument('--plan', action='store_true', help='list what would run; train nothing')
 
-    s = add('tune', cmd_tune, "grid-search the `tune:` block; freeze the best, unapproved")
-    s.add_argument('--cpu-workers', type=int, default=1)
-    s.add_argument('--gpus', default=None, help='comma list of GPU indices')
-    s.add_argument('--per-gpu', type=int, default=1)
-    s.add_argument('--retries', type=int, default=2)
-    s.add_argument('--group-seeds', action='store_true',
-                   help="train each cell's seeds together (the entry's <name>_group)")
-    s.add_argument('--plan', action='store_true', help='list the candidates; train nothing')
-
     add('status', cmd_status, 'every campaign: frozen state, runs stored, failures')
 
     s = add('freeze', cmd_freeze, 'write frozen.yaml (unapproved), or derive it')
-    s.add_argument('--set', action='append', metavar='KEY=VALUE', help='a tuned value')
+    s.add_argument('--set', action='append', metavar='KEY=VALUE', help='a value to pin into the base')
     s.add_argument('--evidence', default=None, help='what justifies the values (a path, a note)')
     s.add_argument('--from-default', action='store_true',
                    help="derive from the default campaign's approved file")
 
-    s = add('tune-report', cmd_tune_report, "rebuild the search's report (tune/report/)")
-    s.add_argument('--no-pdf', action='store_true', help='write the .tex only')
-    s.add_argument('--n-boot', type=int, default=2000)
-
     s = add('approve', cmd_approve, 'approve frozen.yaml')
     s.add_argument('--set', action='append', metavar='KEY=VALUE')
-    s.add_argument('--force', action='store_true',
-                   help="approve although the tuning report says 'do not approve'")
 
     s = add('grand', cmd_grand, 'the grand report over every campaign (campaigns/<exp>/grand/)')
     s.add_argument('--no-pdf', action='store_true', help='write the .tex only')
@@ -390,8 +332,6 @@ def parser():
     s.add_argument('--yes', action='store_true')
 
     s = add('submit', cmd_submit, 'one Slurm job per campaign with runs missing')
-    s.add_argument('--stage', choices=('run', 'tune'), default='run',
-                   help='submit the grid (run) or the search (tune)')
     s.add_argument('--campaigns', default=None, help='comma list (default: all)')
     s.add_argument('--cores', type=int, default=8)
     s.add_argument('--gpus', type=int, default=None, help='GPUs per job')

@@ -4,8 +4,7 @@
 
 It writes into ``campaigns/<experiment>/grand/``:
 
-* ``grand_status.csv``: per campaign, the tuned values, the tuning report's
-  verdict, whether ``frozen.yaml`` is approved, and how many grid runs are stored;
+* ``grand_status.csv``: per campaign, how many grid runs are stored and diverged;
 * ``grand_<metric>.csv``: per campaign and facet, each level's mean with a 95%
   bootstrap CI, and each level's paired difference against the control;
 * ``len_<campaign>.png`` with ``report.lengths``: a metric against input length,
@@ -20,7 +19,7 @@ combination of the non-control factors (the first across, the rest down), a row
 per campaign and a column per level of the control factor (the first key of
 ``control``). A campaign's name links to its length figure and a cell to its
 panel of the loss figure. The other metrics get the same blocks in the appendix.
-A campaign whose grid is not approved or not run yet still has its status row.
+A campaign whose grid has not run yet still has its status row.
 
 The optional ``report`` block of the YAML::
 
@@ -40,7 +39,7 @@ import numpy as np
 import pandas as pd
 
 from expkit import campaign, frozen
-from expkit.config import campaigns, cell_label, get_path, level_str, load_config, same_level
+from expkit.config import campaigns, get_path, level_str, load_config, same_level
 from expkit.latex import ALPHA, TEMPLATES, compile_pdf, environment
 from expkit.latex import plt as _plt, sortable as _sortable
 from expkit.record import now
@@ -52,28 +51,10 @@ def grand_dir(cfg):
     return os.path.join(campaign.campaigns_dir(), cfg.experiment, 'grand')
 
 
-def _tune_verdict(cfg, doc):
-    from expkit import tune_report
-    path = os.path.join(tune_report.report_dir(cfg), 'warnings.json')
-    if os.path.exists(path):
-        import json
-        with open(path) as fh:
-            report = json.load(fh)
-        counts = {level: sum(w['level'] == level for w in report['warnings'])
-                  for level in (tune_report.BLOCK, tune_report.REVIEW)}
-        return report['verdict'], counts
-    return (doc or {}).get('verdict'), {}
-
-
 def status(c):
-    """One campaign's row: tuning, approval, grid progress, and its frame (or None)."""
-    doc = frozen.read_doc(campaign.frozen_path(c))
-    verdict, counts = _tune_verdict(c, doc) if c.extra.get('tune') else (None, {})
-    row = {'campaign': c.campaign, 'tuned': cell_label((doc or {}).get('tuned') or {}),
-           'tune_verdict': verdict or '--', 'blocks': counts.get('block', 0),
-           'reviews': counts.get('review', 0),
-           'approved': bool(doc and doc.get('approved')), 'stored': 0,
-           'expected': len(c.cells()) * int(c.seeds), 'diverged': 0}
+    """One campaign's row (grid progress) and its frame (or None)."""
+    row = {'campaign': c.campaign, 'stored': 0, 'expected': len(c.cells()) * int(c.seeds),
+           'diverged': 0}
     try:
         _, h, _ = frozen.resolve_base(c)
     except SystemExit:
