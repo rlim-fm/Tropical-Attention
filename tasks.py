@@ -12,7 +12,7 @@ import torch
 
 from dataloaders import (
     BalancedPartitionDataset, BinPackingDataset, ConvexHullDataset, FloydWarshallDataset,
-    FractionalKnapsackDataset, KnapsackDataset, LISDataset, MaxSubsetSumDataset,
+    FractionalKnapsackDataset, KnapsackDataset, LISDataset,
     MinCoinChangeDataset, QuickselectDataset, SCCDataset, SubsetSumDecisionDataset,
     ThreeSumDecisionDataset,
 )
@@ -20,7 +20,6 @@ from dataloaders import (
 # name -> (dataset class, graph task: one token per node pair)
 TASKS = {
     'SubsetSumDecisionDataset': (SubsetSumDecisionDataset, False),
-    'MaxSubsetSumDataset': (MaxSubsetSumDataset, False),
     'KnapsackDataset': (KnapsackDataset, False),
     'FractionalKnapsackDataset': (FractionalKnapsackDataset, False),
     'MinCoinChangeDataset': (MinCoinChangeDataset, False),

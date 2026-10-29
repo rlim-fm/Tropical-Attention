@@ -88,13 +88,11 @@ slurm: {device: any, cost: 1}
 
 axes:
   # `data` per campaign: Table 5's OOD value range and perturbative noise range.
-  # MaxSubsetSum and LIS are not in the table, so they clear them to the fallbacks.
+  # LIS is not in the table, so it clears them to the fallbacks.
   dataset:
     Knapsack: {}
     SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null},
                                data: {ood_value_range: [-20, 20], ood_noise_range: [10, 30]}}}
-    MaxSubsetSum: {base: {task: {name: MaxSubsetSumDataset, value_range: [-5, 5], target_range: null, weight_range: null},
-                          data: {ood_value_range: null, ood_noise_range: null}}}
     FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset},
                                 data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
     MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null},

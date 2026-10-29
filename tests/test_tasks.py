@@ -136,7 +136,7 @@ def test_ood_protocol_follows_the_paper(campaign):
 
 def test_ood_value_range_fallback():
     assert ood_value_range('KnapsackDataset', (1, 10)) == (1, 20)
-    assert ood_value_range('MaxSubsetSumDataset', (-5, 5)) == (-10, 10)
+    assert ood_value_range('SubsetSumDecisionDataset', (-5, 5)) == (-10, 10)
     assert ood_value_range('SCCDataset', 0.001) == 0.6
     assert ood_value_range('KnapsackDataset', (1, 10), [11, 21]) == (11, 21)
     assert ood_value_range('SCCDataset', 0.001, 0.1) == 0.1
