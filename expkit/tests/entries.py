@@ -1,5 +1,6 @@
 """Tiny numpy-only entries for the tests: no torch, milliseconds per run."""
 import os
+import time
 
 import numpy as np
 
@@ -57,3 +58,14 @@ def bad_seed(ctx):
 def bad_seed_group(ctxs):
     """Seed 1 fails inside the group (reported, not raised); alone it succeeds."""
     return [ValueError('seed 1 broke') if ctx.seed_index == 1 else quadratic(ctx) for ctx in ctxs]
+
+
+def oom_once(ctx):
+    """lr = 0.01 runs out of GPU memory on its first attempt; lr = 0.3 is slow."""
+    if float(ctx.cell['lr']) == 0.3:
+        time.sleep(1.0)
+    marker = os.path.join(ctx.base['marker_dir'], f"{ctx.cell['lr']}-{ctx.seed_index}")
+    if float(ctx.cell['lr']) == 0.01 and not os.path.exists(marker):
+        open(marker, 'w').close()
+        raise RuntimeError('CUDA out of memory. Tried to allocate 1.25 GiB.')
+    return quadratic(ctx)

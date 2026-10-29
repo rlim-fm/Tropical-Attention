@@ -13,6 +13,11 @@ was running is charged an attempt, with the signal that killed it. The others
 were collateral and go back in the queue at the attempt they were on. Charging
 them all would let three crashes exhaust the retries of every run in the grid.
 
+A run that fails with a CUDA out-of-memory error usually failed because its
+neighbours on the card held the memory, so resubmitting it at once into the
+same full pool only fails it again. Its retry waits instead for the current
+pool to finish, and runs in the next round alongside the other deferred runs.
+
 The parent process is the store's only writer: workers *return* the record
 and curves, and ``execute`` appends them.
 
@@ -238,6 +243,11 @@ def _jsonable(value):
     return value
 
 
+def _out_of_memory(error):
+    """Whether a formatted exception is a CUDA out-of-memory error."""
+    return 'OutOfMemoryError' in error or 'CUDA out of memory' in error
+
+
 def device_slots(gpus=None, per_gpu=1, cpu_workers=1):
     if gpus:
         return [f'cuda:{g}' for g in gpus for _ in range(int(per_gpu))]
@@ -325,6 +335,13 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
             for s in members:
                 started[s.key] = time.time()
 
+        def resubmit(retry, error):
+            """Submit a retry now, or after this pool drains if it ran out of GPU memory."""
+            if _out_of_memory(error):
+                queue_items.append(retry)
+            else:
+                submit(retry)
+
         def charge(spec, attempt, error, reason=None, quiet=False):
             """Log a failed attempt; queue the spec alone for the next, or give up."""
             store.log_attempt(spec, 'failed', attempt, error=error,
@@ -358,14 +375,14 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
                             retry = charge(spec, attempt, format_exception(exc),
                                            reason=f'{type(exc).__name__}: {exc}')
                             if retry:
-                                submit(retry)
+                                resubmit(retry, format_exception(exc))
                         continue
                     for spec, one in zip(members, out if grouped else [out]):
                         if 'error' in one:
                             retry = charge(spec, attempt, one['error'],
                                            reason=one['error'].strip().splitlines()[-1])
                             if retry:
-                                submit(retry)
+                                resubmit(retry, one['error'])
                         else:
                             stored(spec, attempt, one)
         except BrokenProcessPool as exc:

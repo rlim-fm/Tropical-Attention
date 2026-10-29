@@ -33,6 +33,18 @@ def test_exhausted_retries_are_failures(tmp_path):
     assert 'ValueError: broken' in Store(tmp_path).failures()[0]['error']
 
 
+def test_an_out_of_memory_retry_waits_for_the_pool_to_drain(tmp_path):
+    marker = tmp_path / 'markers'
+    marker.mkdir()
+    todo = specs('oom_once', lrs=(0.01, 0.3), seeds=1,
+                 base={'offset': 0.0, 'marker_dir': str(marker)})
+    out = execute(todo, str(tmp_path), ['cpu'] * 2, retries=1, log=lambda *a: None)
+    assert sorted(out['ok']) == sorted(s.key for s in todo)
+    oom, slow = todo[0].key, todo[1].key
+    order = [(a['key'], a['status']) for a in Store(tmp_path).attempts()]
+    assert order == [(oom, 'failed'), (slow, 'ok'), (oom, 'ok')]
+
+
 def test_a_dead_worker_charges_only_its_own_run(tmp_path):
     todo = specs('dies_on', seeds=2)
     victim = next(s.key for s in todo if s.cell['lr'] == 0.3 and s.seed_index == 0)
