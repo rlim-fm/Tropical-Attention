@@ -37,7 +37,8 @@ TASKS = {
 RANGE_KEYS = ('value_range', 'target_range', 'weight_range', 'adversarial_range')
 
 # Split ids, folded into the data seed so every split is its own draw.
-SPLITS = {'train': 0, 'id_val': 1, 'id_test': 2, 'ood_len': 3, 'ood_val': 4, 'ood_noise': 5}
+SPLITS = {'train': 0, 'id_val': 1, 'id_test': 2, 'ood_len': 3, 'ood_val': 4, 'ood_noise': 5,
+          'ood_far': 6}
 
 
 def tokens_per_length(name, length):
