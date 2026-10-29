@@ -14,7 +14,7 @@ def run(*argv):
     return cli.main(list(argv))
 
 
-def test_run_skip_replay_report_clear(tmp_path, campaigns_tmp):
+def test_run_skip_replay_clear(tmp_path, campaigns_tmp):
     cfg_path = write_config(tmp_path / 'quad.yaml')
     assert run('run', '--config', cfg_path, '--cpu-workers', '2') == 0
     cfg = load_config(cfg_path)
@@ -23,12 +23,8 @@ def test_run_skip_replay_report_clear(tmp_path, campaigns_tmp):
     assert run('run', '--config', cfg_path) == 0                        # nothing pending
     assert len(store.attempts()) == 9
     assert run('replay', '--config', cfg_path, '--only', 'lr=0.3') == 0  # bit-identical
-    assert run('report', '--config', cfg_path, '--n-boot', '100') == 0
-    report = os.path.join(campaigns_tmp, 'quad', 'default', 'report')
-    assert os.path.exists(os.path.join(report, 'report.tex'))
-    assert os.path.exists(os.path.join(report, 'stats_vs_control.csv'))
     assert run('clear', '--config', cfg_path, '--only', 'lr=0.3', '--yes') == 0
-    assert len(store.runs()) == 6 and not os.path.isdir(report)
+    assert len(store.runs()) == 6
     assert cfg.experiment == 'quad'
 
 
@@ -80,11 +76,11 @@ def test_submit_plans_one_singleton_job_per_campaign(tmp_path, monkeypatch, caps
     axes = {'noise': {'clean': {}, 'noisy': {'base': {'offset': 1.0}}}}
     cfg_path = write_config(tmp_path / 'quad.yaml', axes=axes)
     monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
-    run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--report')
+    run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--grand')
     out = capsys.readouterr().out
     assert out.count('--dependency=singleton') == 2
     assert '--job-name=xk-quad-noisy' in out and '--profile noisy' in out
-    assert out.count('--dependency=afterany:') == 2
+    assert out.count('--dependency=afterany:') == 1         # the grand report
 
 
 def test_submit_routes_campaigns_and_starts_the_longest_first(tmp_path, monkeypatch, capsys):
@@ -94,7 +90,7 @@ def test_submit_routes_campaigns_and_starts_the_longest_first(tmp_path, monkeypa
     monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
     run('submit', '--config', cfg_path, '--gpus', '1', '--per-gpu', '8', '--gpu-type', 'pro6000',
         '--cpus-per-gpu', '40', '--partition', 'mixed', '--cpu-partition', 'main',
-        '--cpu-cores', '32', '--group-seeds', '--plan', '--report')
+        '--cpu-cores', '32', '--group-seeds', '--plan', '--grand')
     lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith('$ sbatch')]
     noisy, clean = lines[0], lines[1]                  # cost 10 x 3 runs before cost 1 x 3
     assert '--job-name=xk-quad-noisy' in noisy and '-p mixed' in noisy
@@ -102,7 +98,7 @@ def test_submit_routes_campaigns_and_starts_the_longest_first(tmp_path, monkeypa
     assert '--per-gpu 8' in noisy and '--group-seeds' in noisy
     assert '--job-name=xk-quad-clean' in clean and '-p main' in clean and '-n 32' in clean
     assert '--gres' not in clean and '--cpu-workers 32' in clean
-    assert all('-p main' in l for l in lines[2:]) and len(lines) == 4   # the report jobs
+    assert all('-p main' in l for l in lines[2:]) and len(lines) == 3   # the grand report
 
 
 def test_slurm_settings_rejects_an_unknown_device(tmp_path):

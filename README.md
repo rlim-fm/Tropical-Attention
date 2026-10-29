@@ -107,13 +107,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m pytest tests expkit/tests
 LOCAL=1 PROFILE=dry_run scripts/run_all.sh
 
-# 2. Run the grid of every campaign, then a report job for each. Use --plan first to see the sbatch lines.
+# 2. Run the grid of every campaign, then the grand report. Use --plan first to see the sbatch lines.
 scripts/run_all.sh --plan
 scripts/run_all.sh
 expkit/launch.sh status --config configs/tropical.yaml
 
-# 3. Results: campaigns/tropical/<dataset>/report/ (report.tex, stats_*.csv, figures)
-expkit/launch.sh report --config configs/tropical.yaml --profile Knapsack --pdf   # rebuild one
+# 3. Results: campaigns/tropical/grand/ (grand_report.pdf, grand_*.csv, figures)
+expkit/launch.sh grand --config configs/tropical.yaml   # rebuild it
 ```
 
 `CAMPAIGNS=Knapsack,SCC` limits any script to some campaigns. Re-running a script
@@ -126,7 +126,7 @@ expkit/launch.sh clear  --config configs/tropical.yaml --profile Knapsack --only
 expkit/launch.sh replay --config configs/tropical.yaml --profile Knapsack --only seed=0   # bit-identical check
 ```
 
-**Commit** the reports (`campaigns/**/report/`, `campaigns/tropical/grand/`), built on
+**Commit** the grand report (`campaigns/tropical/grand/`), built on
 the cluster. Run data is gitignored.
 
 #### Compute
@@ -148,7 +148,7 @@ so the scripts pack work onto each card in two ways:
 
 On Slurm each script submits **one single-node job per campaign**, longest
 first (the YAML's `slurm: {cost: ...}`). `--dependency=singleton` stops two jobs
-writing one campaign, and each report job waits on its own campaign's job. The
+writing one campaign, and the grand-report job waits on all of them. The
 defaults use both of the Bowdoin cluster's GPU queues, whose per-user limits stack.
 The `mixed` queue's PRO6000 nodes (96 GB cards) take your full allowance there,
 2 cards + 80 cores + 500 GB, as two jobs of 1 card + 40 cores + 120 GB, each with
@@ -194,7 +194,7 @@ are small (`batch_size: 8`, `eval_batch_size: 8`).
 | `LOCAL` | unset | `1`: run here, campaign after campaign, instead of submitting |
 | `CAMPAIGNS` / `PROFILE` | all | which campaigns, or one profile such as `dry_run` |
 | `EXPKIT_PARTITION` | mixed | partition of the first GPU lane |
-| `EXPKIT_CPU_PARTITION` | main | partition of the CPU lane and the report jobs |
+| `EXPKIT_CPU_PARTITION` | main | partition of the CPU lane and the grand-report job |
 | `EXPKIT_MPS` | 1 | run a CUDA MPS daemon inside each GPU job |
 | `EXPKIT_SBATCH_ARGS` | unset | extra sbatch flags, e.g. `--time=12:00:00 --account=X` |
 | `EXPKIT_GB_PER_CORE` | 3 | `--mem` = cores × this |

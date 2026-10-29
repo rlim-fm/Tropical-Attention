@@ -1,9 +1,0 @@
-metric,path,reason
-ood_len_f1,parametric,values away from the metric bounds
-ood_len_exact,parametric,values away from the metric bounds
-ood_val_f1,parametric,values away from the metric bounds
-ood_val_exact,parametric,values away from the metric bounds
-ood_noise_f1,parametric,values away from the metric bounds
-ood_noise_exact,parametric,values away from the metric bounds
-id_f1,parametric,values away from the metric bounds
-id_exact,parametric,values away from the metric bounds

@@ -23,8 +23,8 @@ Commands run from the repo root as `python -m expkit ...`, or through
 `PYTHONPATH`. Outputs go to `campaigns/` at the repo root. Override that with
 `EXPKIT_CAMPAIGNS` or `--root`.
 
-Add to your `.gitignore`. These are bulky, and only replay and the report's
-curve figures read them:
+Add to your `.gitignore`. These are bulky, and only replay and the grand
+report's loss curves read them:
 
 ```gitignore
 campaigns/**/results/curves.jsonl
@@ -43,7 +43,7 @@ are what the statistics read, and they diff as appended lines.
 python -m expkit run    --config expkit/examples/toy.yaml --profile dry_run --cpu-workers 4
 python -m expkit run    --config expkit/examples/toy.yaml --profile dry_run   # 0 to run
 python -m expkit replay --config expkit/examples/toy.yaml --profile dry_run --only seed=0
-python -m expkit report --config expkit/examples/toy.yaml --profile dry_run --pdf
+python -m expkit grand  --config expkit/examples/toy.yaml
 python -m expkit status --config expkit/examples/toy.yaml
 ```
 
@@ -91,13 +91,13 @@ profiles: {dry_run: {seeds: 2, base: {optim: {epochs: 1}}}}
 | `tune [--plan]` | grid-searches the YAML's `tune:` block on its own seeds and store, writes `tune/tune.csv`, and freezes the best candidate, unapproved (see `expkit/tune.py`) |
 | `freeze --set k=v` / `approve` | writes `frozen.yaml` with tuned values, unapproved; `approve` after you have read the evidence |
 | `freeze --profile P --from-default` | derives a campaign from the approved default, and refuses if the profile moves a tuned value |
-| `report [--pdf]` | `stats_*.csv`, figures, `report.tex` |
+| `grand [--no-pdf]` | the report over every campaign (`campaigns/<experiment>/grand/`): a colored table per combination of the non-control factors, per-campaign length and loss figures, `grand_*.csv` |
 | `replay --keys K` | retrains stored runs and fails unless their curves match exactly (`--tolerance`) |
 | `clear [--only ...] --yes` | removes runs so they retrain after a fix that leaves their keys unchanged |
-| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4 --gpu-type T --cpus-per-gpu K] [--cpu-partition P --cpu-cores N] [--group-seeds] [--report] [--plan]` | one `sbatch` job per campaign with runs missing, longest first; `--report` adds a report job per campaign that waits on that campaign's job |
+| `submit [--stage tune\|run] --cores 32 [--gpus 1 --per-gpu 4 --gpu-type T --cpus-per-gpu K] [--cpu-partition P --cpu-cores N] [--group-seeds] [--grand] [--plan]` | one `sbatch` job per campaign with runs missing, longest first; `--grand` adds one grand-report job that waits on all of them |
 
 Pass the same `--profile` to every command. It selects the campaign directory
-`campaigns/<experiment>/<campaign>/` (`frozen.yaml`, `results/`, `report/`).
+`campaigns/<experiment>/<campaign>/` (`frozen.yaml`, `results/`).
 
 ## The invariants (keep them, or things break silently)
 

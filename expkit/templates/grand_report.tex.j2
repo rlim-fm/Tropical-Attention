@@ -1,16 +1,51 @@
 <# The grand report: every campaign of an experiment (see expkit/grand.py). #>
 \documentclass[10pt]{article}
-\usepackage[margin=2.0cm]{geometry}
-\usepackage{booktabs,longtable,graphicx,array,xcolor}
+\usepackage[landscape,margin=1.4cm]{geometry}
+\usepackage[table]{xcolor}
+\usepackage{booktabs,longtable,graphicx,array,tikz}
 \usepackage[hidelinks]{hyperref}
 \setlength{\tabcolsep}{3.5pt}
-<% set others = levels[1:] %>
-<% macro facet_cols(r) %><% for f in facets %><< r[f]|level >> & <% endfor %><% endmacro %>
-\title{<< cfg.experiment|escape >>: every campaign}
-\date{<< built|escape >>}
-\begin{document}
-\maketitle
+\setlength{\parindent}{0pt}
+<# One metric's colored tables: a block per combination of the facets, a row per campaign. #>
+<% macro grid(s) %>
+\begin{center}
+<% for row in s.grid %>
+<% for b in row %>
+{\footnotesize\setlength{\tabcolsep}{2.2pt}\renewcommand{\arraystretch}{1.12}%
+\begin{tabular}[t]{@{}l<% for _ in levels %>c<% endfor %>@{}}
+\multicolumn{<< levels|length + 1 >>}{c}{\large\textbf{<< b.title|escape >>}}\\[0.3ex]
+\texttt{<< col|escape >>} & <% for lv in levels %><< lv|level >><% if not loop.last %> & <% endif %><% endfor %>\\
+\midrule
+<% for r in b.rows %>
+\hyperref[<< r.anchor >>]{<< r.campaign|escape >>} & <% for c in r.cells %><% if c.bg %>\cellcolor[HTML]{<< c.bg >>}<% endif %>\hyperlink{<< c.anchor >>}{\textcolor[HTML]{<< c.fg >>}{<% if c.bold %>\textbf{<< c.text >>}<% else %><< c.text >><% endif %><% if c.star %>$^*$<% endif %>}}<% if not loop.last %> & <% endif %><% endfor %>\\
+<% endfor %>
+\bottomrule
+\end{tabular}}<% if not loop.last %>\hfill<% endif %>
 
+<% endfor %>
+\vspace{2ex}
+<% endfor %>
+\end{center}
+<% endmacro %>
+\begin{document}
+\begin{center}
+{\Large << cfg.experiment|escape >>: every campaign}\\[0.4ex]
+{\small << built|escape >>}
+\end{center}
+
+<% if sections %>
+<% set s = sections[0] %>
+\section{<< s.label|escape >> at a glance}\label{sec:glance}
+<% if col %>
+Each block is one model; its columns run through \texttt{<< col|escape >>} (control << control|escape >>), its rows are the campaigns.
+Cells are the seed mean of \texttt{<< s.metric|escape >>} (<< 'lower' if s.direction == 'min' else 'higher' >> is better), bold where best in its block's row, $^*$ where the paired difference against the control has $p < << alpha >>$.
+The colour scale is per campaign, shared by all six blocks (spanning at least a tenth of the metric's range), so it compares models and levels within a task, not tasks.
+Click a campaign for its <% if lengths %>length curves<% else %>figures<% endif %>, a cell for its loss curves.
+<% endif %>
+<< grid(s) >>
+
+\clearpage
+<% endif %>
 \section{Status}
 \autoref{tab:status} lists every campaign: the values its search tuned, that search's verdict (\texttt{tune/report/}), whether \texttt{frozen.yaml} is approved, and how much of its grid is stored.
 << n_results >> of << status|length >> campaigns have grid results.
@@ -30,41 +65,54 @@ campaign & tuned & verdict & blk & rev & approved & runs & div.\\
 }
 
 <% if sections %>
-\section{Results}
-Columns are the levels of \texttt{<< col|escape >>}; each campaign's rows are the combinations of <% for f in facets %>\texttt{<< f|escape >>}<% if not loop.last %>, <% endif %><% endfor %>.
-Means are over seeds, the best per row in bold. $\Delta$ is a level's paired difference against the control (<< control|escape >>) by seed, marked $^*$ where $p < << alpha >>$ after the campaign's correction.
-<% if figure %>
-\autoref{fig:grand} shows the headline metric at a glance.
+\section{Per campaign}
+<% if lengths %>
+For each campaign, first \texttt{<< lengths.family|escape >>}$n$ against the input length $n$: a panel per model, a line per level of \texttt{<< col|escape >>} (seed means).
+The shaded band is the training lengths and the red dashed line the longest of them: every length right of it is OOD.
+<% if lengths.reference %>The point inside the band is \texttt{<< lengths.reference|escape >>}, pooled over the training lengths and drawn at their geometric mean.<% endif %>
 
+<% endif %>
+Then the loss curves of every cell: a row per model, a column per level of \texttt{<< col|escape >>}; seed mean of <% for n in loss_names %>\texttt{<< n|escape >>}<% if not loop.last %>, <% endif %><% endfor %>, shaded over the seed range; the dotted line is the median selected epoch.
+<% for t in tasks %>
+\clearpage
+\subsection{<< t.campaign|escape >>}\label{sec:<< t.label >>}
+<% if t.lengths %>
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=\textwidth]{<< figure >>}
-\caption{The headline metric, \texttt{<< sections[0].metric|escape >>}: every campaign by cell.}
-\label{fig:grand}
+\includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{<< t.lengths >>}
+\caption{<< t.campaign|escape >>: \texttt{<< lengths.family|escape >>}$n$ against input length $n$, per model and \texttt{<< col|escape >>}. Back to \hyperref[sec:glance]{the overview}.}
+\label{<< t.label >>}
+\end{figure}
+<% else %>
+\phantomsection\label{<< t.label >>}
+<% endif %>
+<% if t.loss %>
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\node[inner sep=0, anchor=south west] (img) {\includegraphics[width=\textwidth,height=0.86\textheight,keepaspectratio]{<< t.loss >>}};
+\begin{scope}[x={(img.south east)}, y={(img.north west)}]
+<% for a in t.anchors %>
+\node[inner sep=0] at (<< '%.4f'|format(a.x) >>, << '%.4f'|format(a.y) >>) {\hypertarget{<< a.name >>}{}};
+<% endfor %>
+\end{scope}
+\end{tikzpicture}
+\caption{<< t.campaign|escape >>: loss curves per model (rows) and \texttt{<< col|escape >>} (columns). Back to \hyperref[sec:glance]{the overview}.}
 \end{figure}
 <% endif %>
+<% endfor %>
 
-<% for s in sections %>
-<% if not s.headline and loop.index0 == 1 %>
+<% if sections|length > 1 %>
 \clearpage
 \appendix
 \section{Other metrics}
+The same blocks for every other metric; the full tables, with confidence intervals and differences against the control, are the \texttt{grand\_<metric>.csv} files next to this report.
+<% for s in sections[1:] %>
+\clearpage
+\subsection{<< s.label|escape >> (\texttt{<< s.metric|escape >>}, << 'lower' if s.direction == 'min' else 'higher' >> is better)}
+<< grid(s) >>
+<% endfor %>
 <% endif %>
-\subsection{\texttt{<< s.metric|escape >>} (<< 'lower' if s.direction == 'min' else 'higher' >> is better)}
-{\small
-\begin{longtable}{l<% for f in facets %>l<% endfor %><% for _ in levels %>r<% endfor %><% for _ in others %>r<% endfor %>}
-\caption{\texttt{<< s.metric|escape >>} per campaign: means by \texttt{<< col|escape >>}, and $\Delta$ against << control|escape >>.}\label{tab:<< s.metric >>}\\
-\toprule
-campaign & <% for f in facets %>\texttt{<< f|escape >>} & <% endfor %><% for lv in levels %><< lv|escape >> & <% endfor %><% for lv in others %>$\Delta$ << lv|escape >><% if not loop.last %> & <% endif %><% endfor %>\\
-\midrule
-\endhead
-<% for r in s.rows %>
-<< r.campaign|escape >> & << facet_cols(r) >><% for lv in levels %><% set m = r[lv ~ '_mean'] if (lv ~ '_mean') in r else none %><% if lv == r.best %>\textbf{<< m|num(3) >>}<% else %><< m|num(3) >><% endif %> & <% endfor %><% for lv in others %><% set d = r[lv ~ '_diff'] if (lv ~ '_diff') in r else none %><% set p = r[lv ~ '_p'] if (lv ~ '_p') in r else none %><< d|num(2) >><% if p is not none and p < alpha %>$^*$<% endif %><% if not loop.last %> & <% endif %><% endfor %>\\
-<% endfor %>
-\bottomrule
-\end{longtable}
-}
-<% endfor %>
 <% else %>
 \section{Results}
 No campaign has grid results yet: approve the tuned campaigns, then run \texttt{scripts/run\_all.sh}.

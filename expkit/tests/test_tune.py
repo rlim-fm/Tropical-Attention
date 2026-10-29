@@ -70,19 +70,11 @@ def test_tuning_on_the_grid_seeds_is_refused(tmp_path):
         run('tune', '--config', cfg_path)
 
 
-def test_submit_tune_stage_and_per_campaign_reports(tmp_path, monkeypatch, capsys):
+def test_submit_tune_stage(tmp_path, monkeypatch, capsys):
     axes = {'noise': {'clean': {}, 'noisy': {'base': {'offset': 1.0}}}}
     cfg_path = write_config(tmp_path / 'quad.yaml', axes=axes, tune=TUNE)
     monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
-    run('submit', '--stage', 'tune', '--config', cfg_path, '--cores', '4', '--plan', '--report')
+    run('submit', '--stage', 'tune', '--config', cfg_path, '--cores', '4', '--plan')
     out = capsys.readouterr().out
     assert '--job-name=xk-quad-clean-tune' in out and '--job-name=xk-quad-noisy-tune' in out
     assert ' tune --config' in out and 'report' not in out
-
-    run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--report')
-    out = capsys.readouterr().out
-    # each report waits on its own campaign's job only
-    reports = [line for line in out.replace("'", '').splitlines() if '-report' in line]
-    assert len(reports) == 2
-    assert all(f'--dependency=afterany:<xk-quad-{c}> ' in line
-               for c, line in zip(('clean', 'noisy'), reports))

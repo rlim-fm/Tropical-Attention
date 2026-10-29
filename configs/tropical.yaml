@@ -6,7 +6,7 @@
 #
 #   python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4
 #   python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
-#   python -m expkit report --config configs/tropical.yaml --profile Knapsack --pdf
+#   python -m expkit grand  --config configs/tropical.yaml
 #   python -m expkit status --config configs/tropical.yaml
 #
 # Each dataset is a campaign (campaigns/tropical/<dataset>/). Its task settings
@@ -69,50 +69,14 @@ metrics:
 headline: ood_len_f1
 replay_curves: [train_loss, fishr_penalty, id_val_loss]
 
-# The report (expkit/report.py): a hue per model, darker for the pointer head.
+# The grand report (expkit/grand.py): a block per model, fishr_lambda across.
 report:
-  color_by: model_type
-  shade_by: {factor: head, order: [pointer, seq2seq]}
-  colors: {vanilla: '#1f5fa8', adaptive: '#c2571a', tropical: '#1b7f3b'}
-  grid: [[id_f1, id_exact], [ood_len_f1, ood_len_exact], [ood_val_f1, ood_val_exact],
-         [ood_noise_f1, ood_noise_exact]]
   labels: {id_f1: ID F1, id_exact: ID exact, ood_len_f1: Length-OOD F1, ood_len_exact: Length-OOD exact,
            ood_val_f1: Value-OOD F1, ood_val_exact: Value-OOD exact, ood_noise_f1: Noise-OOD F1,
-           ood_noise_exact: Noise-OOD exact, ood_len_f1_L: F1, ood_len_exact_L: exact}
+           ood_noise_exact: Noise-OOD exact, ood_len_f1_L: F1}
+  lengths: {family: ood_len_f1_L, reference: id_f1, train_lengths: data.train_lengths}
+  loss_curves: [train_loss, id_val_loss]
   curve_x: epoch
-  effective_weight: {curve: fishr_penalty, scale: fishr_lambda, relative_to: train_loss, last: 10}
-  length_curve: {families: [ood_len_f1_L, ood_len_exact_L], relative_to: data.train_lengths,
-                 levels: [min, median, max], reference: {ood_len_f1_L: id_f1, ood_len_exact_L: id_exact}}
-  task: ''       # each campaign's own sentence on its inputs and targets (axes below)
-  setup: |
-    <% set d = base.data %><% set longest = d.train_lengths|max %>
-    \paragraph{Task.} << opts.task >>
-    Every task here is \emph{binary classification per token} (subset selection), not regression:
-    the model emits one logit per token, is trained with per-token binary cross-entropy,
-    and a token counts as selected when its logit is positive.
-    \emph{F1} is micro-averaged over every token of every instance of a split, with ``selected'' as the positive class;
-    \emph{exact} is the fraction of instances whose whole mask is right.
-
-    \paragraph{Training.} << d.n_per_length >> instances at each length
-    << d.train_lengths|join(', ') >>, one Fishr environment per length,
-    for << base.optim.epochs >> epochs; the reported model is the epoch with the lowest
-    in-distribution validation loss (no OOD data is used for selection).
-    Fishr (Ram\'e et al.\ 2022) penalizes the spread across environments of the variance of per-sample gradients
-    of the head; \texttt{fishr\_lambda} weighs it ($0$ is ERM), switched on after << base.fishr.anneal_iters >> steps.
-
-    \paragraph{Test sets.} Each is << d.n_eval_per_length >> fresh instances per length.
-    \emph{ID}: the training lengths and distribution.
-    \emph{Length OOD}: lengths << d.ood_lengths|join(', ') >>, i.e.\
-    <% for L in d.ood_lengths %><< '%g'|format(L / longest) >>$\times$<< ', ' if not loop.last else '' >><% endfor %> the longest training length (<< longest >>), from the same generator with every other setting unchanged;
-    the headline score pools these lengths, each weighted by its token count.
-    <% if d.ood_far_lengths %>\emph{Far length}: lengths << d.ood_far_lengths|join(', ') >>
-    (up to << '%g'|format((d.ood_far_lengths|max) / longest) >>$\times$), scored per length only, on fewer instances as length grows
-    (about << d.ood_far_tokens >> tokens' worth per length, at least << d.ood_far_min >> instances).<% endif %>
-    \autoref{fig:lengths} gives every length separately.
-    \emph{Value OOD}: the training lengths, with values drawn from << d.ood_value_range|string|escape >>
-    instead of << base.task.value_range|string|escape >>.
-    \emph{Noise OOD}: the training lengths, each input perturbed with probability << d.ood_noise_prob >>
-    << ('by a draw from %s' % d.ood_noise_range)|escape if d.ood_noise_range else 'as the task defines' >>.
 require_frozen: false
 
 # `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
@@ -151,16 +115,16 @@ axes:
                  data: {ood_value_range: null, ood_noise_range: null}}}
     # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before),
     # and the paper's length OOD is 16 nodes (256 tokens), not 64.
+    # Floyd--Warshall. An instance is an undirected Erd\H{o}s--R\'enyi graph on $n$ nodes (the \emph{length}), one token per ordered node pair ($n^2$ tokens) carrying the edge weight and the two normalized node indices. Token $(u,v)$ is selected iff edge $(u,v)$ is the last edge of some shortest path, i.e.\ the union of the shortest-path trees of every source.
     FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
                            data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: [16, 30], ood_noise_range: [1, 10]},
                            optim: {batch_size: 8, eval_batch_size: 8}},
-                    report: {task: 'Floyd--Warshall. An instance is an undirected Erd\H{o}s--R\''enyi graph on $n$ nodes (the \emph{length}), one token per ordered node pair ($n^2$ tokens) carrying the edge weight and the two normalized node indices. Token $(u,v)$ is selected iff edge $(u,v)$ is the last edge of some shortest path, i.e.\ the union of the shortest-path trees of every source.'},
                     slurm: {device: gpu, cost: 15}}   # 12.5x the steps, of L^2 tokens each
     # SCC: value_range is the edge probability; noise flips each edge with ood_noise_prob.
+    # Strongly connected components. An instance is a directed graph on $n$ nodes (the \emph{length}) from a community model (intra-community edge probability \texttt{value\_range}, inter-community 0.05), one token per ordered node pair ($n^2$ tokens) carrying the edge bit and the two normalized node indices. Token $(i,j)$ is selected iff $i$ and $j$ lie in the same strongly connected component.
     SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
                  data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: 0.1, ood_noise_range: null},
                  optim: {batch_size: 8, eval_batch_size: 8}},
-          report: {task: 'Strongly connected components. An instance is a directed graph on $n$ nodes (the \emph{length}) from a community model (intra-community edge probability \texttt{value\_range}, inter-community 0.05), one token per ordered node pair ($n^2$ tokens) carrying the edge bit and the two normalized node indices. Token $(i,j)$ is selected iff $i$ and $j$ lie in the same strongly connected component.'},
           slurm: {device: gpu, cost: 15}}
 
 profiles:

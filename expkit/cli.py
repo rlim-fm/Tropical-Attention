@@ -7,14 +7,14 @@
     expkit status   --config X                       # every campaign: frozen? stored? failed?
     expkit freeze   --config X [--set k=v ...] [--evidence PATH] | --from-default
     expkit approve  --config X [--set k=v ...]
-    expkit report   --config X [--pdf]
+    expkit grand    --config X [--no-pdf]             # the report over every campaign
     expkit replay   --config X --keys K | --only ... [--tolerance 0]   # bit-identical check
     expkit clear    --config X [--only ...] [--yes]
     expkit submit   --config X [--stage tune|run] [--campaigns a/b,c/d] --cores 32
                     [--gpus 1 --per-gpu 4 --gpu-type pro6000 --cpus-per-gpu 40]
                     [--lanes 'mixed:pro6000:2:40:120:12 main:cpu:4:32::12:0.3']
                     [--cpu-partition main --cpu-cores 32] [--group-seeds]
-                    [--report] [--plan]                                      # Slurm
+                    [--grand] [--plan]                                       # Slurm
 
 Every command takes ``--config``, ``--profile`` and ``--root``, and resolves the
 same campaign directory from them (``expkit.campaign``). Pass the same
@@ -170,15 +170,6 @@ def cmd_grand(args, cfg):
     return 0
 
 
-def cmd_report(args, cfg):
-    from expkit import report
-    base, frozen_hash, _ = frozen.resolve_base(cfg, args.root)
-    store = Store(args.store or campaign.store_dir(cfg, args.root))
-    report.build(cfg, store, frozen_hash, base, args.out_dir or campaign.report_dir(cfg, args.root),
-                 pdf=args.pdf, n_boot=args.n_boot)
-    return 0
-
-
 def curve_deviation(stored, replayed, names):
     """Largest |stored - replayed| over the named curves; NaN patterns must match."""
     worst = 0.0
@@ -227,8 +218,7 @@ def cmd_replay(args, cfg):
 def cmd_clear(args, cfg):
     from expkit.clear import clear
     store = args.store or campaign.store_dir(cfg, args.root)
-    return clear(store, campaign.report_dir(cfg, args.root),
-                 [parse_selector(o) for o in (args.only or [])], yes=args.yes)
+    return clear(store, [parse_selector(o) for o in (args.only or [])], yes=args.yes)
 
 
 def slurm_settings(cfg):
@@ -258,7 +248,7 @@ def cmd_submit(args, cfg):
             raise SystemExit(f'unknown campaign(s) {unknown}; there are {names}')
         names = wanted
     config_arg = os.path.relpath(cfg.path, slurm.REPO)
-    ids = {}                  # campaign -> its job ids, so each report waits on its own
+    ids = {}                  # campaign -> its job ids, which the grand report waits on
     tuning = args.stage == 'tune'
     cpu_partition = args.cpu_partition or os.environ.get('EXPKIT_CPU_PARTITION')
     todo = []                 # (cost, order, name, config, job name, device)
@@ -325,18 +315,6 @@ def cmd_submit(args, cfg):
         if jid:
             ids[name] = [jid]
     waits = [str(i) for jobs in ids.values() for i in jobs]
-    if args.report and not tuning:
-        waits = []
-        for name, jobs in ids.items():
-            report_args = ['report', '--config', config_arg, '--pdf']
-            if name != 'default':
-                report_args += ['--profile', name]
-            jid = slurm.submit(slurm.job_name(cfg.experiment, f'{name}-report'), 1, report_args,
-                               dependency='afterany:' + ':'.join(str(i) for i in jobs),
-                               partition=cpu_partition if args.gpus else args.partition,
-                               plan=args.plan)
-            if jid:
-                waits.append(str(jid))
     if args.grand:
         # after every job above (each tune job writes its own tuning report), or at once
         slurm.submit(slurm.job_name(cfg.experiment, 'grand'), 1,
@@ -395,12 +373,6 @@ def parser():
     s.add_argument('--force', action='store_true',
                    help="approve although the tuning report says 'do not approve'")
 
-    s = add('report', cmd_report, 'statistics, figures and report.tex')
-    s.add_argument('--store', default=None)
-    s.add_argument('--out-dir', default=None)
-    s.add_argument('--pdf', action='store_true')
-    s.add_argument('--n-boot', type=int, default=2000)
-
     s = add('grand', cmd_grand, 'the grand report over every campaign (campaigns/<exp>/grand/)')
     s.add_argument('--no-pdf', action='store_true', help='write the .tex only')
     s.add_argument('--n-boot', type=int, default=2000)
@@ -434,12 +406,11 @@ def parser():
                         'GPU lanes replace --partition, --gpu-type, --cpus-per-gpu and --per-gpu, '
                         'a CPU lane --cpu-partition and --cpu-cores')
     s.add_argument('--cpu-partition', default=None,
-                   help='queue for campaigns with slurm.device: cpu, and the report jobs')
+                   help='queue for campaigns with slurm.device: cpu, and the grand-report job')
     s.add_argument('--cpu-cores', type=int, default=None,
                    help='cores for a slurm.device: cpu campaign (default: --cores)')
     s.add_argument('--group-seeds', action='store_true',
                    help="train each cell's seeds together (the entry's <name>_group)")
-    s.add_argument('--report', action='store_true', help='then a report job per campaign')
     s.add_argument('--grand', action='store_true',
                    help='then one grand-report job over every campaign, after all the others')
     s.add_argument('--plan', action='store_true', help='print the sbatch lines; submit nothing')

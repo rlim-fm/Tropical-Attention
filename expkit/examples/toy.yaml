@@ -1,6 +1,6 @@
 # The toy experiment (examples/toy.py). Run it:
 #   python -m expkit run    --config expkit/examples/toy.yaml --profile dry_run --cpu-workers 4
-#   python -m expkit report --config expkit/examples/toy.yaml --profile dry_run --pdf
+#   python -m expkit grand  --config expkit/examples/toy.yaml
 experiment: toy
 entry: expkit.examples.toy:run
 global_seed: 0

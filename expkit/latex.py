@@ -10,11 +10,37 @@ import os
 import re
 import subprocess
 
-from expkit.record import REPO
+from expkit.record import PACKAGE, REPO
+
+TEMPLATES = os.path.join(PACKAGE, 'templates')
+ALPHA = 0.05
 
 TEX_SPECIALS = {'&': r'\&', '%': r'\%', '$': r'\$', '#': r'\#', '_': r'\_',
                 '{': r'\{', '}': r'\}', '~': r'\textasciitilde{}', '^': r'\^{}',
                 '\\': r'\textbackslash{}'}
+
+
+def plt():
+    """matplotlib's pyplot on the Agg backend (the reports run headless)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as pyplot
+    return pyplot
+
+
+def sortable(values):
+    """Numbers first, ascending, then everything else by its string."""
+    def key(v):
+        try:
+            return (0, float(v), '')
+        except (TypeError, ValueError):
+            return (1, 0.0, str(v))
+    return sorted(values, key=key)
+
+
+def yaml_lines(base):
+    import yaml
+    return yaml.safe_dump(base, sort_keys=False, default_flow_style=False).splitlines()
 
 
 def escape(value):

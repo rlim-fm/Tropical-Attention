@@ -29,8 +29,8 @@
 # the job slot that would finish it soonest: `slurm: {device: any}` in the config
 # may take any lane, `gpu` only the GPU lanes, `cpu` only `main`. Speed is a job's
 # throughput relative to a `mixed` job; set it from the runs' times in slurm/*.out
-# (CPU_SPEED, or a :speed on a gpu-queue lane that proves slower). The report
-# jobs go to `main` too.
+# (CPU_SPEED, or a :speed on a gpu-queue lane that proves slower). The grand-report
+# job goes to `main` too.
 # Slurm itself: EXPKIT_PARTITION (mixed), EXPKIT_CPU_PARTITION (main),
 # EXPKIT_GB_PER_CORE (3), EXPKIT_JOB_PREFIX, EXPKIT_SBATCH_ARGS.
 set -euo pipefail

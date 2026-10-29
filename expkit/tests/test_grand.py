@@ -29,8 +29,11 @@ def test_grand_report_covers_every_campaign(tmp_path, campaigns_tmp):
     assert '0.1_diff' not in table      # the control has no difference against itself
     with open(os.path.join(out, 'grand_report.tex')) as fh:
         tex = fh.read()
-    assert 'clean' in tex and 'noisy' in tex and r'\section{Results}' in tex
-    assert os.path.exists(os.path.join(out, 'grand_mse.png'))
+    assert 'clean' in tex and 'noisy' in tex and r'at a glance}' in tex
+    assert r'\cellcolor[HTML]' in tex                      # the colored blocks
+    # each cell links to its panel of the campaign's loss figure
+    assert r'\hyperlink{loss-clean-0-0}' in tex and r'\hypertarget{loss-clean-0-0}' in tex
+    assert os.path.exists(os.path.join(out, 'loss_clean.png'))
 
 
 def test_grand_report_without_results_still_lists_the_tuning(tmp_path, campaigns_tmp):
@@ -46,11 +49,11 @@ def test_grand_report_without_results_still_lists_the_tuning(tmp_path, campaigns
 def test_submit_queues_the_grand_report_after_every_job(tmp_path, monkeypatch, capsys):
     cfg_path = write_config(tmp_path / 'quad.yaml', axes=AXES, tune=TUNE)
     monkeypatch.setattr(slurm, 'queued', lambda name, **_: [])
-    run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--report', '--grand')
+    run('submit', '--config', cfg_path, '--cores', '4', '--plan', '--grand')
     out = capsys.readouterr().out.replace("'", '')
     grand_line = [line for line in out.splitlines() if '--job-name=xk-quad-grand' in line]
     assert len(grand_line) == 1
-    assert '--dependency=afterany:<xk-quad-clean-report>:<xk-quad-noisy-report>' in grand_line[0]
+    assert '--dependency=afterany:<xk-quad-clean>:<xk-quad-noisy>' in grand_line[0]
 
     run('submit', '--stage', 'tune', '--config', cfg_path, '--cores', '4', '--plan', '--grand')
     out = capsys.readouterr().out.replace("'", '')

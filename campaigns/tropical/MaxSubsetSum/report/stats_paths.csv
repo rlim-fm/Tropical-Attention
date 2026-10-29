@@ -1,9 +1,0 @@
-metric,path,reason
-ood_len_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-ood_len_exact,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-ood_val_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-ood_val_exact,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-ood_noise_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-ood_noise_exact,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-id_f1,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"
-id_exact,rank-based,"more than 20% of values within 0.01 of a bound (0, 1)"

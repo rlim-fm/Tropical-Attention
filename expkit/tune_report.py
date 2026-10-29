@@ -34,9 +34,9 @@ import numpy as np
 from expkit import campaign, frozen, tune
 from expkit.config import (base_hash, cell_label, cell_matches, flatten, get_path, level_str,
                            plain, with_overrides)
-from expkit.latex import compile_pdf, environment
+from expkit.latex import TEMPLATES, compile_pdf, environment, yaml_lines
+from expkit.latex import plt as _plt
 from expkit.record import now
-from expkit.report import TEMPLATES, _plt, _yaml_lines
 from expkit.stats import mean_ci
 from expkit.store import Store
 
@@ -537,7 +537,7 @@ def build(cfg, root=None, *, pdf=True, n_boot=2000, log=print):
         **{k: v for k, v in a.items() if k not in ('curves', 'records', 'store')},
         warning_rows=warnings, figures=figures, curve_names=curve_names,
         provenance=_provenance(a['cands']), built=now(), store=a['store'].root,
-        flags=campaign.cli_flags(cfg, root), base_lines=_yaml_lines(
+        flags=campaign.cli_flags(cfg, root), base_lines=yaml_lines(
             with_overrides(cfg.base, a['best'] or {})))
     path = os.path.join(out_dir, 'tune_report.tex')
     with open(path, 'w') as fh:

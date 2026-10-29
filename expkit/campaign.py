@@ -5,7 +5,6 @@ cannot disagree about where the others wrote::
 
     <root>/frozen.yaml     the approved base config the grid runs (expkit freeze/approve)
     <root>/results/        the run store (expkit.store)
-    <root>/report/         the report (expkit.report)
 
 The default root is ``<campaigns dir>/<experiment>/<campaign>/``. The campaigns
 dir is ``$EXPKIT_CAMPAIGNS``, or else ``campaigns/`` in the repository expkit
@@ -33,10 +32,6 @@ def frozen_path(cfg, root=None):
 
 def store_dir(cfg, root=None):
     return os.path.join(campaign_root(cfg, root), 'results')
-
-
-def report_dir(cfg, root=None):
-    return os.path.join(campaign_root(cfg, root), 'report')
 
 
 def add_arguments(parser):
