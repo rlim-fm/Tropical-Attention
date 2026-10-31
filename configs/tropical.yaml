@@ -1,8 +1,18 @@
 # Tropical vs softmax attention on subset-selection tasks, seq2seq vs pointer head,
 # and Fishr's lambda as an independent variable (log10 grid; 0 = ERM), with one
 # Fishr environment per training sequence length. Everything else is the original
-# Tropical Attention setup (upstream experiment.py and jobs_to_do_train.csv at the
-# fork, MHTA v2.0.0). Nothing is tuned: run the grid, then report.
+# Tropical Attention setup (upstream experiment.py and jobs_to_do_train.csv at
+# MHTA v2.0.0, e3c12f3; OOD ranges from Table 5 and App. F of Hashemi et al. 2025):
+# d_model 64, 2 heads, 1 layer, no dropout, RAdamScheduleFree at lr 1e-4, 100 epochs
+# (1000 for BalancedPartition and BinPacking, as the code has; Table 5 says 100),
+# 100k training instances, batch 500, the epoch with the lowest ID loss.
+# Deliberate differences from it:
+#   - training lengths 4-8 (one Fishr environment each) instead of 8 alone, so ERM
+#     (lambda = 0) is not the paper's length-8 baseline;
+#   - graph tasks: batch 8 per environment (40) instead of 16;
+#   - every split is fresh instances (2000 per length) instead of an 80/20 split;
+#   - LIS is not in Table 5, so its OOD ranges fall back.
+# Nothing is tuned: run the grid, then report.
 #
 #   python -m expkit run    --config configs/tropical.yaml --profile dry_run --cpu-workers 4
 #   python -m expkit run    --config configs/tropical.yaml --profile Knapsack --gpus 0 --per-gpu 4
