@@ -22,6 +22,7 @@ batch order, and the optimizer is elementwise, so every seed follows the path
 """
 import copy
 import math
+import time
 
 import schedulefree
 import torch
@@ -132,6 +133,34 @@ def _far_batches(ctx, envs, models=1):
     return out
 
 
+OOM_WAITS = (5, 15, 45, 120)    # seconds; a neighbour's peak on a shared card passes
+OOM_HALVINGS = 6
+
+
+def _retry_oom(call):
+    """``call(shrink)`` with ``shrink = 1``, surviving a transient CUDA out-of-memory error.
+
+    The final evaluation runs after the whole of training, on a card shared with
+    dozens of other runs, so an OOM there would throw that training away. On one,
+    free the cache and retry after each of ``OOM_WAITS``; then retry with ``shrink``
+    doubled (the caller divides its batch, and query chunk, by it), up to
+    ``OOM_HALVINGS`` times. Rows are scored independently, so the counts are the same
+    in any batch size.
+    """
+    waits, shrink = list(OOM_WAITS), 1
+    while True:
+        try:
+            return call(shrink)
+        except torch.cuda.OutOfMemoryError:
+            if not waits and shrink >= 2 ** OOM_HALVINGS:
+                raise
+        torch.cuda.empty_cache()
+        if waits:
+            time.sleep(waits.pop(0))
+        else:
+            shrink *= 2
+
+
 def _evaluate_far(evaluate_one, model, envs, batches):
     """``{length: (f1, exact)}`` over the far lengths, each in its own batch size and
     query chunk; ``evaluate_one(envs, batch_size)`` returns ``evaluate``'s per-length dict
@@ -139,8 +168,11 @@ def _evaluate_far(evaluate_one, model, envs, batches):
     out = None
     for L, env in envs.items():
         bs, chunk = batches[L]
-        set_query_chunk(model, chunk)
-        res = evaluate_one({L: env}, bs)
+
+        def one(shrink):
+            set_query_chunk(model, max(1, chunk // shrink))
+            return evaluate_one({L: env}, max(1, bs // shrink))
+        res = _retry_oom(one)
         if isinstance(res, dict):
             out = {**(out or {}), **res}
         else:
@@ -248,11 +280,14 @@ def run(ctx: RunContext) -> RunResult:
     # ---- final metrics at the selected epoch (the paper, App. F, reports the final one) ----
     opt.eval()
     model.load_state_dict(best_state)
-    id_m = evaluate(model, id_test, eval_bs, device)[0]
-    ood_m, ood_per_length = evaluate(model, ood_len, eval_bs, device)
-    val_m = evaluate(model, ood_val, eval_bs, device)[0]
-    noise_m = evaluate(model, ood_noise, eval_bs, device)[0]
+    def final(envs):
+        return _retry_oom(lambda k: evaluate(model, envs, max(1, eval_bs // k), device))
+    id_m = final(id_test)[0]
+    ood_m, ood_per_length = final(ood_len)
+    val_m = final(ood_val)[0]
+    noise_m = final(ood_noise)[0]
     del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
+    torch.cuda.empty_cache()            # the far eval's peak reuses the training memory
     far = _far_envs(ctx)
     if far:
         ood_per_length = {**ood_per_length, **_evaluate_far(
@@ -461,12 +496,15 @@ def run_group(ctxs):
     # ---- final metrics at each seed's selected epoch ----
     opt.eval()
     state = (best_state, buffers)
-    id_ms = evaluate_group(forward, state, id_test, eval_bs)
-    ood_ms = evaluate_group(forward, state, ood_len, eval_bs)
-    val_ms = evaluate_group(forward, state, ood_val, eval_bs)
-    noise_ms = evaluate_group(forward, state, ood_noise, eval_bs)
+    def final(envs):
+        return _retry_oom(lambda k: evaluate_group(forward, state, envs, max(1, eval_bs // k)))
+    id_ms = final(id_test)
+    ood_ms = final(ood_len)
+    val_ms = final(ood_val)
+    noise_ms = final(ood_noise)
     del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
-    far = [_far_envs(ctx) for ctx in ctxs]
+    torch.cuda.empty_cache()            # the far eval's peak reuses the training memory
+    far =[_far_envs(ctx) for ctx in ctxs]
     far_ms = [{} for _ in range(S)]
     if far[0]:
         envs = {L: (torch.stack([f[L][0] for f in far]).to(device),

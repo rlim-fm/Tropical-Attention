@@ -1,4 +1,4 @@
-from expkit.executor import execute
+from expkit.executor import execute, thin_slots
 from expkit.record import RunSpec
 from expkit.store import Store
 
@@ -43,6 +43,22 @@ def test_an_out_of_memory_retry_waits_for_the_pool_to_drain(tmp_path):
     oom, slow = todo[0].key, todo[1].key
     order = [(a['key'], a['status']) for a in Store(tmp_path).attempts()]
     assert order == [(oom, 'failed'), (slow, 'ok'), (oom, 'ok')]
+
+
+def test_an_out_of_memory_only_round_runs_on_fewer_slots(tmp_path):
+    marker = tmp_path / 'markers'
+    marker.mkdir()
+    todo = specs('oom_once', lrs=(0.01,), seeds=2, base={'offset': 0.0, 'marker_dir': str(marker)})
+    lines = []
+    out = execute(todo, str(tmp_path), ['cpu'] * 4, retries=1, log=lines.append)
+    assert sorted(out['ok']) == sorted(s.key for s in todo)
+    assert '  ! 2 out-of-memory retries; next round on 2 slots' in lines
+
+
+def test_thin_slots_halves_each_device_and_keeps_one():
+    assert thin_slots(['cuda:0'] * 4 + ['cuda:1'] * 2) == ['cuda:0'] * 2 + ['cuda:1']
+    assert thin_slots(['cuda:0', 'cuda:1']) == ['cuda:0', 'cuda:1']
+    assert thin_slots(['cpu'] * 3) == ['cpu']
 
 
 def test_a_dead_worker_charges_only_its_own_run(tmp_path):

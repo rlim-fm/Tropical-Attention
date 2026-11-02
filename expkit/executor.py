@@ -17,6 +17,10 @@ A run that fails with a CUDA out-of-memory error usually failed because its
 neighbours on the card held the memory, so resubmitting it at once into the
 same full pool only fails it again. Its retry waits instead for the current
 pool to finish, and runs in the next round alongside the other deferred runs.
+When that round holds nothing but such retries, it runs on half the slots of
+each device (``thin_slots``), and each further round of them on half again.
+A CUDA worker also empties its allocator's cache after every run, so a run's
+peak is not held reserved while the worker trains the next.
 
 The parent process is the store's only writer: workers *return* the record
 and curves, and ``execute`` appends them.
@@ -81,7 +85,14 @@ def _call(worker, ident, payload, store_root):
     # A SimpleQueue writes before put() returns, so the parent can still read
     # which run (or seed group) a worker held after the worker is killed mid-run.
     _STARTED.put((os.getpid(), ident))
-    return worker(payload, store_root, _DEVICE)
+    try:
+        return worker(payload, store_root, _DEVICE)
+    finally:
+        if _DEVICE.startswith('cuda'):
+            # The caching allocator keeps a run's peak reserved; hand it back
+            # before this worker takes its next run, so its neighbours can use it.
+            import torch
+            torch.cuda.empty_cache()
 
 
 def _exit_reason(code):
@@ -254,6 +265,17 @@ def device_slots(gpus=None, per_gpu=1, cpu_workers=1):
     return ['cpu'] * max(1, int(cpu_workers))
 
 
+def thin_slots(slots):
+    """Half of each device's slots (at least one), in the original order."""
+    keep = {d: max(1, slots.count(d) // 2) for d in set(slots)}
+    out = []
+    for d in slots:
+        if keep[d]:
+            out.append(d)
+            keep[d] -= 1
+    return out
+
+
 def export_worker_env(slots):
     """Export the environment that spawned workers inherit, for ``slots`` running
     at once. Returns the thread count each worker should take.
@@ -266,6 +288,10 @@ def export_worker_env(slots):
     threads = threads_per_worker(len(slots))
     export_thread_env(threads)
     export_device_env(slots)            # CPU slots inherit no GPU at all
+    if any(s.startswith('cuda') for s in slots):
+        # Dozens of runs share a card: growable segments keep a freed peak from
+        # leaving reserved-but-unusable fragments behind.
+        os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
     return threads
 
 
@@ -314,13 +340,15 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
             f'({out.get("wall_seconds", 0):.1f}s, {out.get("device")}'
             f'{f", group of {group}" if group else ""}) {headline}')
 
+    round_slots = slots
     while queue_items:
         ctx = mp.get_context('spawn')
         queue = ctx.Queue()
-        for slot in slots:
+        for slot in round_slots:
             queue.put(slot)
         notes, held = ctx.SimpleQueue(), {}
-        pool = ProcessPoolExecutor(max_workers=len(slots), mp_context=ctx,
+        oom_deferred = 0
+        pool = ProcessPoolExecutor(max_workers=len(round_slots), mp_context=ctx,
                                    initializer=_init_worker, initargs=(queue, threads, notes))
         started, inflight = {}, {}
 
@@ -337,8 +365,10 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
 
         def resubmit(retry, error):
             """Submit a retry now, or after this pool drains if it ran out of GPU memory."""
+            nonlocal oom_deferred
             if _out_of_memory(error):
                 queue_items.append(retry)
+                oom_deferred += 1
             else:
                 submit(retry)
 
@@ -404,6 +434,12 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
             log(f'  ! a worker died; rebuilding the pool for {len(queue_items)} tasks')
         finally:
             pool.shutdown(wait=not broken, cancel_futures=broken)
+        if queue_items and oom_deferred == len(queue_items):
+            round_slots = thin_slots(round_slots)
+            log(f'  ! {len(queue_items)} out-of-memory retries; next round on '
+                f'{len(round_slots)} slots')
+        else:
+            round_slots = slots
 
     assert set(ok) | set(failed) <= set(by_key)
     return {'ok': ok, 'failed': failed}
