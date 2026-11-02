@@ -35,6 +35,16 @@ TASKS = {
 
 RANGE_KEYS = ('value_range', 'target_range', 'weight_range', 'adversarial_range')
 
+# The input channels that carry the task's values: the ones each dataset's own
+# perturbative noise touches (on graph tasks, off the diagonal only).
+VALUE_CHANNELS = {
+    'SubsetSumDecisionDataset': [0], 'KnapsackDataset': [0, 1],
+    'FractionalKnapsackDataset': [0, 1], 'MinCoinChangeDataset': [0],
+    'QuickselectDataset': [0], 'BalancedPartitionDataset': [0], 'BinPackingDataset': [0],
+    'ConvexHullDataset': [0, 1], 'ThreeSumDecisionDataset': [0], 'LISDataset': [0],
+    'FloydWarshallDataset': [0], 'SCCDataset': [0],
+}
+
 # Split ids, folded into the data seed so every split is its own draw.
 SPLITS = {'train': 0, 'id_val': 1, 'id_test': 2, 'ood_len': 3, 'ood_val': 4, 'ood_noise': 5,
           'ood_far': 6}
@@ -108,3 +118,35 @@ def make_envs(task, lengths, n_samples, data_seed, split, value_range=None, **ov
     return {int(L): make_env(task, L, n_samples, split_seed(data_seed, split, L), value_range,
                              **overrides)
             for L in lengths}
+
+
+def value_env_seed(data_seed, split, length, env):
+    """The seed of value environment ``env`` of one split (env 0: the length's own seed)."""
+    return (split_seed(data_seed, split, length) + 15485863 * int(env)) % 2 ** 32
+
+
+def make_value_envs(task, length, ranges, n_samples, data_seed, split):
+    """``{env: (X, Y)}``: one environment per value range in ``ranges``, all at ``length``."""
+    return {i: make_env(task, length, n_samples, value_env_seed(data_seed, split, length, i),
+                        _as_range(r))
+            for i, r in enumerate(ranges)}
+
+
+def add_gumbel(X, task_name, scale, seed):
+    """``X`` with ``scale * G`` added to its value channels, G ~ Gumbel(0, 1) drawn once.
+
+    ``seed`` is the seed that drew ``X``, so the noise is tied to those instances, and
+    G does not depend on ``scale``: every scale of one seed sees the same draw, scaled.
+    The noise is not centred (its mean is ``0.5772 * scale``) and the labels are untouched.
+    """
+    if not scale:
+        return X
+    g = torch.Generator().manual_seed(int(seed))
+    u = torch.rand(X.shape[:2] + (len(VALUE_CHANNELS[task_name]),), generator=g)
+    noise = -torch.log(-torch.log(u.clamp(1e-12, 1 - 1e-7)))
+    if TASKS[task_name][1]:
+        n = int(round(X.size(1) ** 0.5))
+        noise[:, torch.arange(n) * (n + 1)] = 0.0       # the diagonal: no self-loop to perturb
+    X = X.clone()
+    X[..., VALUE_CHANNELS[task_name]] += float(scale) * noise
+    return X

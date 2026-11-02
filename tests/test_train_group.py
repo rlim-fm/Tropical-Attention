@@ -71,3 +71,15 @@ def test_group_rejects_mixed_cells():
     b = _ctxs({'model_type': 'tropical', 'head': 'seq2seq', 'fishr_lambda': 0.0}, n=1)
     with pytest.raises(ValueError, match='one cell'):
         train.run_group(a + b)
+
+
+@pytest.mark.parametrize('config,cell', [
+    ('configs/tropical_value.yaml', {'model_type': 'tropical', 'head': 'pointer', 'fishr_lambda': 10.0}),
+    ('configs/tropical_gumbel.yaml', {'model_type': 'vanilla', 'head': 'seq2seq', 'gumbel_scale': 1.0}),
+])
+def test_group_matches_single_runs_in_the_other_experiments(config, cell):
+    base = load_config(config, 'dry_run').base
+    singles = [train.run(ctx) for ctx in _ctxs(cell, base=base)]
+    group = train.run_group(_ctxs(cell, base=base))
+    for a, b in zip(singles, group):
+        assert not b.diverged and _deviation(a, b) < 1e-5

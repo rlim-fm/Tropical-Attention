@@ -10,9 +10,10 @@ from scipy.sparse.csgraph import floyd_warshall
 from dataloaders import (FloydWarshallDataset, LISDataset, SubsetSumDecisionDataset,
                          ThreeSumDecisionDataset, calculate_lis_length, lis_mask,
                          subset_sum_witness, three_sum_witness)
-from expkit.config import load_config
-from tasks import (SPLITS, TASKS, make_env, make_envs, ood_noise_settings, ood_value_range,
-                   split_seed, tokens_per_length)
+from expkit.config import campaigns, load_config
+from tasks import (SPLITS, TASKS, VALUE_CHANNELS, add_gumbel, make_env, make_envs,
+                   make_value_envs, ood_noise_settings, ood_value_range, split_seed,
+                   tokens_per_length)
 
 CONFIG = 'configs/tropical.yaml'
 
@@ -172,3 +173,61 @@ def test_dry_run_uses_knapsacks_ood_settings():
     assert load_config(CONFIG, 'dry_run').base['task'] == load_config(CONFIG, 'Knapsack').base['task']
     data = load_config(CONFIG, 'dry_run').base['data']
     assert (data['ood_value_range'], data['ood_noise_range']) == ([11, 21], [10, 30])
+
+
+# ---- the value-OOD and Gumbel-noise experiments --------------------------------------
+
+VALUE_CONFIG = 'configs/tropical_value.yaml'
+GUMBEL_CONFIG = 'configs/tropical_gumbel.yaml'
+
+
+def test_every_task_names_its_value_channels():
+    assert set(VALUE_CHANNELS) == set(TASKS)
+
+
+def test_value_envs_draw_from_their_own_ranges():
+    task = load_config(VALUE_CONFIG, 'Knapsack').base['task']
+    ranges = [[1, 4], [4, 7], [7, 10]]
+    envs = make_value_envs(task, 8, ranges, 50, 0, 'train')
+    assert set(envs) == {0, 1, 2}
+    for e, (lo, hi) in enumerate(ranges):
+        values = envs[e][0][..., 0]          # Knapsack's channel 0: the item values
+        assert lo <= values.min() and values.max() <= hi
+        assert values.min() < values.max()
+
+
+@pytest.mark.parametrize('campaign', campaign_tasks())
+def test_value_campaigns_cut_their_training_range(campaign):
+    if campaign == 'SCC':                 # one edge probability, no range to cut
+        assert campaign not in campaigns(VALUE_CONFIG)
+        return
+    base = load_config(VALUE_CONFIG, campaign).base
+    lo, hi = base['task']['value_range']
+    ranges = base['data']['train_value_ranges']
+    assert len(ranges) == 3 and ranges[0][0] == lo and ranges[-1][1] == hi
+    for (_, a_hi), (b_lo, _) in zip(ranges, ranges[1:]):
+        assert b_lo <= a_hi                # neighbours overlap (slightly)
+        assert a_hi - b_lo <= 0.15 * (hi - lo)
+
+
+@pytest.mark.parametrize('campaign', campaign_tasks())
+def test_gumbel_touches_only_value_channels(campaign):
+    task = load_config(GUMBEL_CONFIG, campaign).base['task']
+    X, _ = make_env(task, 4, 6, seed=3)
+    Xn = add_gumbel(X, task['name'], 1.0, seed=11)
+    changed = (Xn != X)
+    others = [c for c in range(X.size(-1)) if c not in VALUE_CHANNELS[task['name']]]
+    assert not changed[..., others].any()
+    assert changed[..., VALUE_CHANNELS[task['name']]].any()
+    if TASKS[task['name']][1]:                # graph tasks: never the diagonal
+        assert not changed[:, torch.arange(4) * 5].any()
+
+
+def test_gumbel_is_static_and_scales_linearly():
+    task = {'name': 'KnapsackDataset'}
+    X, _ = make_env(task, 8, 20, seed=0)
+    assert add_gumbel(X, task['name'], 0.0, seed=1) is X
+    a, b = add_gumbel(X, task['name'], 0.5, seed=1), add_gumbel(X, task['name'], 0.5, seed=1)
+    assert torch.equal(a, b)
+    assert not torch.equal(a, add_gumbel(X, task['name'], 0.5, seed=2))
+    torch.testing.assert_close(add_gumbel(X, task['name'], 2.0, seed=1) - X, 4 * (a - X), atol=1e-4, rtol=1e-4)

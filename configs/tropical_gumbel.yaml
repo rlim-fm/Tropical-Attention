@@ -1,0 +1,138 @@
+# Gumbel-noise augmentation, without Fishr: ERM over the training lengths, whose
+# inputs get Gumbel(0, gumbel_scale) noise on their value channels (the channels each
+# task's own perturbative noise touches; tasks.VALUE_CHANNELS). The noise is static:
+# drawn once before training, from the seed that drew each length's training data,
+# never resampled. Every scale of one seed sees the same draw, scaled. It is not
+# centred (mean 0.577 x scale), the labels stay the clean ones, and the validation
+# and test splits are clean. gumbel_scale = 0 is plain ERM, the control.
+# Everything else is configs/tropical.yaml: the original Tropical Attention setup and
+# its deliberate differences (training lengths 4-8, fresh splits, ...).
+#
+#   python -m expkit run    --config configs/tropical_gumbel.yaml --profile dry_run --cpu-workers 4
+#   python -m expkit grand  --config configs/tropical_gumbel.yaml
+#   CONFIG=configs/tropical_gumbel.yaml scripts/run_all.sh
+#
+# Each dataset is a campaign (campaigns/tropical_gumbel/<dataset>/).
+experiment: tropical_gumbel
+entry: train:run
+global_seed: 0
+seeds: 5
+
+base:
+  # The task of the first campaign; each `dataset` level below replaces it.
+  task: {name: KnapsackDataset, value_range: [1, 10], target_range: [10, 20], weight_range: [1, 10],
+         adversarial_range: [10, 30], noise_prob: 0.0}
+  data:
+    train_lengths: [4, 5, 6, 7, 8]   # one environment (a minibatch a step) each
+    ood_lengths: [12, 16, 64]        # 64 = the paper's length OOD for set tasks (App. F)
+    # Value and noise OOD at the training lengths: Knapsack's row of Table 5 of
+    # Hashemi et al. 2025; each campaign below sets its own. A null range falls back:
+    # value doubles the training range (tasks.ood_value_range), noise uses the
+    # task's adversarial_range.
+    ood_value_range: [11, 21]
+    ood_noise_range: [10, 30]
+    ood_noise_prob: 0.5              # each input perturbed with probability 0.5 (App. F)
+    n_per_length: 20000              # 100k training instances, as before
+    n_eval_per_length: 2000
+    curve_eval_limit: 256            # instances per length behind the per-epoch ood_len_f1 curve
+    # Far length test, scored per length only (ood_len_*_L<n>) after training, to 1000x the
+    # longest training length. Each length gets ~ood_far_tokens tokens of instances (at least
+    # ood_far_min), so longer lengths have fewer instances.
+    ood_far_lengths: [80, 250, 800, 2500, 8000]
+    ood_far_tokens: 32000
+    ood_far_min: 16
+  model: {d_model: 64, n_heads: 2, num_layers: 1, dropout: 0.0, tropical_impl: legacy}
+  optim: {lr: 0.0001, epochs: 100, batch_size: 100, eval_batch_size: 256,   # batch_size per environment
+          eval_tokens: 32768, eval_block: 1048576}   # far lengths: tokens per batch, query x key per block
+  # No Fishr; the penalty is still logged (on detached features) as ERM's curve.
+  fishr: {ema: 0.95, anneal_iters: 1500, reset_optimizer: true}
+
+factors:
+  model_type: [vanilla, adaptive, tropical]
+  head: [seq2seq, pointer]
+  gumbel_scale: [0.0, 0.1, 0.3, 1.0, 3.0]   # in input units (1 = one integer step); 0 = ERM
+
+control: {gumbel_scale: 0.0}     # every scale against clean ERM
+analysis:
+  trend: {factor: gumbel_scale, transform: log10}   # scale = 0 drops out of the log trend
+  paired:
+    - {factor: model_type, a: tropical, b: vanilla}
+    - {factor: model_type, a: adaptive, b: vanilla}
+    - {factor: head, a: pointer, b: seq2seq}
+
+metrics:
+  ood_len_f1: {direction: max, bounds: [0, 1]}
+  ood_len_exact: {direction: max, bounds: [0, 1]}
+  ood_val_f1: {direction: max, bounds: [0, 1]}
+  ood_val_exact: {direction: max, bounds: [0, 1]}
+  ood_noise_f1: {direction: max, bounds: [0, 1]}
+  ood_noise_exact: {direction: max, bounds: [0, 1]}
+  id_f1: {direction: max, bounds: [0, 1]}
+  id_exact: {direction: max, bounds: [0, 1]}
+headline: ood_len_f1
+replay_curves: [train_loss, fishr_penalty, id_val_loss]
+
+# The grand report (expkit/grand.py): a block per model, gumbel_scale across.
+report:
+  labels: {id_f1: ID F1, id_exact: ID exact, ood_len_f1: Length-OOD F1, ood_len_exact: Length-OOD exact,
+           ood_val_f1: Value-OOD F1, ood_val_exact: Value-OOD exact, ood_noise_f1: Noise-OOD F1,
+           ood_noise_exact: Noise-OOD exact, ood_len_f1_L: F1}
+  lengths: {family: ood_len_f1_L, reference: id_f1, train_lengths: data.train_lengths}
+  loss_curves: [train_loss, id_val_loss]
+  curve_x: epoch
+require_frozen: false
+
+# `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
+# one of its runs takes relative to the others (the longest are submitted first).
+# `any`: whichever lane (GPU queues or `main`'s cores) would finish it soonest;
+# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh). The set tasks' tiny
+# models train about as well on cores; the graph tasks' L^2 tokens stay on cards.
+slurm: {device: any, cost: 1}
+
+axes:
+  # `data` per campaign: Table 5's OOD value range and perturbative noise range.
+  # LIS is not in the table, so it clears them to the fallbacks.
+  dataset:
+    Knapsack: {}
+    SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null},
+                               data: {ood_value_range: [-20, 20], ood_noise_range: [10, 30]}}}
+    FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset},
+                                data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null},
+                           data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null},
+                         data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000},
+                               data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}},
+                        slurm: {cost: 10}}     # 10x the epochs
+    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000},
+                        data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}},
+                 slurm: {cost: 10}}
+    ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null},
+                        data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]},
+                              data: {ood_value_range: [-375, 375], ood_noise_range: [40, 60]}}}
+    LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null},
+                 data: {ood_value_range: null, ood_noise_range: null}}}
+    # Graph tasks: L nodes are L*L pair tokens, so batches are small (16 total before),
+    # and the paper's length OOD is 16 nodes (256 tokens), not 64.
+    # Floyd--Warshall. An instance is an undirected Erd\H{o}s--R\'enyi graph on $n$ nodes (the \emph{length}), one token per ordered node pair ($n^2$ tokens) carrying the edge weight and the two normalized node indices. Token $(u,v)$ is selected iff edge $(u,v)$ is the last edge of some shortest path, i.e.\ the union of the shortest-path trees of every source.
+    FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
+                           data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: [16, 30], ood_noise_range: [1, 10]},
+                           optim: {batch_size: 8, eval_batch_size: 8}},
+                    slurm: {device: gpu, cost: 15}}   # 12.5x the steps, of L^2 tokens each
+    # SCC: value_range is the edge probability; noise flips each edge with ood_noise_prob.
+    # Strongly connected components. An instance is a directed graph on $n$ nodes (the \emph{length}) from a community model (intra-community edge probability \texttt{value\_range}, inter-community 0.05), one token per ordered node pair ($n^2$ tokens) carrying the edge bit and the two normalized node indices. Token $(i,j)$ is selected iff $i$ and $j$ lie in the same strongly connected component.
+    SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
+                 data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: 0.1, ood_noise_range: null},
+                 optim: {batch_size: 8, eval_batch_size: 8}},
+          slurm: {device: gpu, cost: 15}}
+
+profiles:
+  dry_run:
+    seeds: 2
+    factors: {gumbel_scale: [0.0, 1.0]}
+    base:
+      data: {train_lengths: [4, 5], ood_lengths: [8], ood_far_lengths: [50], ood_far_tokens: 200, ood_far_min: 2,
+             n_per_length: 64, n_eval_per_length: 32, curve_eval_limit: 16}
+      optim: {epochs: 2, batch_size: 16}

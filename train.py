@@ -10,8 +10,15 @@ A run is a function of (base, cell, seeds) (``expkit.api``):
 
 Cells (``configs/tropical.yaml``): ``model_type`` x ``head`` x ``fishr_lambda``
 (lambda = 0 is ERM).
-Every step takes one minibatch from each training length. ERM and Fishr see
+Every step takes one minibatch from each training environment. ERM and Fishr see
 the same batches, so every lambda is seed-paired with ERM.
+
+The environments are the training lengths, or, with ``data.envs: value``
+(``configs/tropical_value.yaml``), the value ranges ``data.train_value_ranges`` at
+the one length ``data.train_lengths[0]``. A ``gumbel_scale`` factor
+(``configs/tropical_gumbel.yaml``, no ``fishr_lambda``: ERM) adds Gumbel noise of
+that scale to the training inputs' value channels, drawn once from each training
+environment's own data seed.
 
 ``run_group`` trains several seeds of one cell at once (``expkit run
 --group-seeds``): the models are stacked (``torch.func.stack_module_state``)
@@ -33,7 +40,8 @@ from torch.func import functional_call, stack_module_state, vmap
 from expkit.api import RunContext, RunResult
 from fishr import FishrPenalty, gradient_variance, per_sample_head_grads
 from models import build_model, set_query_chunk
-from tasks import make_envs, ood_noise_settings, ood_value_range, tokens_per_length
+from tasks import (add_gumbel, make_envs, make_value_envs, ood_noise_settings, ood_value_range,
+                   split_seed, tokens_per_length, value_env_seed)
 
 
 def _optimizer(model, lr):
@@ -88,9 +96,22 @@ def _splits(ctx):
     ood_lengths = [int(L) for L in data.get('ood_lengths') or [2 * max(train_lengths)]]
     n_train, n_eval = int(data['n_per_length']), int(data['n_eval_per_length'])
     seed = ctx.seeds['data']
-    # one environment per training length
+    if data.get('envs', 'length') == 'value':
+        # one environment per value range, all at the one training length
+        L = train_lengths[0]
+        train = make_value_envs(task, L, data['train_value_ranges'], n_train, seed, 'train')
+        train_seeds = {e: value_env_seed(seed, 'train', L, e) for e in train}
+    else:
+        # one environment per training length
+        train = make_envs(task, train_lengths, n_train, seed, 'train')
+        train_seeds = {L: split_seed(seed, 'train', L) for L in train}
+    scale = float(ctx.cell.get('gumbel_scale', 0.0))
+    if scale:
+        # Static augmentation: drawn once, from the seed that drew each environment.
+        train = {e: (add_gumbel(X, task['name'], scale, train_seeds[e]), Y)
+                 for e, (X, Y) in train.items()}
     return {
-        'train': make_envs(task, train_lengths, n_train, seed, 'train'),
+        'train': train,
         'id_val': make_envs(task, train_lengths, n_eval, seed, 'id_val'),
         'id_test': make_envs(task, train_lengths, n_eval, seed, 'id_test'),
         'ood_len': make_envs(task, ood_lengths, n_eval, seed, 'ood_len'),
@@ -210,7 +231,7 @@ def run(ctx: RunContext) -> RunResult:
     base, cell, device = ctx.base, ctx.cell, ctx.device
     data, optim, fishr_cfg = base['data'], base['optim'], base['fishr']
 
-    # ---- data: one environment per training length ----
+    # ---- data: one environment per training length (or value range) ----
     splits = _splits(ctx)
     id_val, id_test, ood_len, ood_val, ood_noise = (
         splits[k] for k in ('id_val', 'id_test', 'ood_len', 'ood_val', 'ood_noise'))
@@ -222,7 +243,7 @@ def run(ctx: RunContext) -> RunResult:
     lr = float(optim['lr'])
     opt = _optimizer(model, lr)
 
-    lam = float(cell['fishr_lambda'])
+    lam = float(cell.get('fishr_lambda', 0.0))   # absent: ERM
     use_fishr = lam > 0
     penalty_fn = FishrPenalty(ema=float(fishr_cfg['ema']))
     anneal = int(fishr_cfg['anneal_iters'])
@@ -392,7 +413,7 @@ def run_group(ctxs):
         full, head = split_state(*state)
         return functional_call(skeleton.head, head, (functional_call(features, full, (x,)),))
 
-    lam = float(cell['fishr_lambda'])
+    lam = float(cell.get('fishr_lambda', 0.0))   # absent: ERM
     use_fishr = lam > 0
 
     def seed_step(p, b, xs, ys):

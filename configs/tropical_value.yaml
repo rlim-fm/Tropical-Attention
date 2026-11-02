@@ -1,0 +1,136 @@
+# Value OOD with Fishr: the environments are value ranges, not lengths. Fishr's
+# claim is invariance across environments that differ in their values, so this checks
+# it on Tropical Attention's value-OOD test (Table 5 of Hashemi et al. 2025). Everything
+# is configs/tropical.yaml (the original setup and its deliberate differences), except:
+#   - one training length, 8 (the paper's), instead of 4-8;
+#   - three Fishr environments, fixed in advance: the training value range cut into
+#     three contiguous subranges that overlap slightly (a shared boundary value, ~10%),
+#     each campaign's in `data.train_value_ranges`. ID validation and test draw from
+#     the whole training range;
+#   - 33334 instances and a batch of 167 per environment, so ~100k instances and ~500
+#     a step, as the paper's single environment had;
+#   - no far length test; the headline is value-OOD F1;
+#   - SCC is left out: its value_range is one edge probability, not a range to cut.
+# Caveats: Quickselect min-max normalizes its values per instance, so a value shift is
+# mostly invisible to it; LIS has no Table 5 range, and the fallback ([2, 20]) overlaps
+# the training range.
+#
+#   python -m expkit run    --config configs/tropical_value.yaml --profile dry_run --cpu-workers 4
+#   python -m expkit grand  --config configs/tropical_value.yaml
+#   CONFIG=configs/tropical_value.yaml scripts/run_all.sh
+#
+# Each dataset is a campaign (campaigns/tropical_value/<dataset>/).
+experiment: tropical_value
+entry: train:run
+global_seed: 0
+seeds: 5
+
+base:
+  # The task of the first campaign; each `dataset` level below replaces it.
+  task: {name: KnapsackDataset, value_range: [1, 10], target_range: [10, 20], weight_range: [1, 10],
+         adversarial_range: [10, 30], noise_prob: 0.0}
+  data:
+    envs: value                       # Fishr environments are value ranges (train._splits)
+    train_lengths: [8]                # the one training length; ID splits are drawn here too
+    train_value_ranges: [[1, 4], [4, 7], [7, 10]]   # Knapsack's [1, 10]; each campaign sets its own
+    ood_lengths: [12, 16, 64]
+    # Value and noise OOD at length 8: Knapsack's row of Table 5; each campaign sets its own.
+    ood_value_range: [11, 21]
+    ood_noise_range: [10, 30]
+    ood_noise_prob: 0.5
+    n_per_length: 33334               # per environment: ~100k training instances
+    n_eval_per_length: 2000
+    curve_eval_limit: 256
+    ood_far_lengths: []               # no far length test
+  model: {d_model: 64, n_heads: 2, num_layers: 1, dropout: 0.0, tropical_impl: legacy}
+  optim: {lr: 0.0001, epochs: 100, batch_size: 167, eval_batch_size: 256,   # batch_size per environment
+          eval_tokens: 32768, eval_block: 1048576}   # far lengths: tokens per batch, query x key per block
+  fishr: {ema: 0.95, anneal_iters: 1500, reset_optimizer: true}   # DomainBed defaults, fixed
+
+factors:
+  model_type: [vanilla, adaptive, tropical]
+  head: [seq2seq, pointer]
+  fishr_lambda: [0.0, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]   # 0 = ERM
+
+control: {fishr_lambda: 0.0}     # every lambda against ERM
+analysis:
+  trend: {factor: fishr_lambda, transform: log10}   # lambda = 0 drops out of the log trend
+  paired:
+    - {factor: model_type, a: tropical, b: vanilla}
+    - {factor: model_type, a: adaptive, b: vanilla}
+    - {factor: head, a: pointer, b: seq2seq}
+
+metrics:
+  ood_len_f1: {direction: max, bounds: [0, 1]}
+  ood_len_exact: {direction: max, bounds: [0, 1]}
+  ood_val_f1: {direction: max, bounds: [0, 1]}
+  ood_val_exact: {direction: max, bounds: [0, 1]}
+  ood_noise_f1: {direction: max, bounds: [0, 1]}
+  ood_noise_exact: {direction: max, bounds: [0, 1]}
+  id_f1: {direction: max, bounds: [0, 1]}
+  id_exact: {direction: max, bounds: [0, 1]}
+headline: ood_val_f1
+replay_curves: [train_loss, fishr_penalty, id_val_loss]
+
+# The grand report (expkit/grand.py): a block per model, fishr_lambda across.
+# Its length figure is length 8 against the OOD lengths.
+report:
+  labels: {id_f1: ID F1, id_exact: ID exact, ood_len_f1: Length-OOD F1, ood_len_exact: Length-OOD exact,
+           ood_val_f1: Value-OOD F1, ood_val_exact: Value-OOD exact, ood_noise_f1: Noise-OOD F1,
+           ood_noise_exact: Noise-OOD exact, ood_len_f1_L: F1}
+  lengths: {family: ood_len_f1_L, reference: id_f1, train_lengths: data.train_lengths}
+  loss_curves: [train_loss, id_val_loss]
+  curve_x: epoch
+require_frozen: false
+
+# `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
+# one of its runs takes relative to the others (the longest are submitted first).
+# `any`: whichever lane (GPU queues or `main`'s cores) would finish it soonest;
+# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh). The set tasks' tiny
+# models train about as well on cores; the graph tasks' L^2 tokens stay on cards.
+slurm: {device: any, cost: 1}
+
+axes:
+  # `data` per campaign: its three training value ranges (the other [1, 10] tasks
+  # keep Knapsack's), Table 5's OOD value range and perturbative noise range.
+  # LIS is not in the table, so it clears them to the fallbacks.
+  dataset:
+    Knapsack: {}
+    SubsetSumDecision: {base: {task: {name: SubsetSumDecisionDataset, value_range: [-5, 5], target_range: [1, 10], weight_range: null},
+                               data: {train_value_ranges: [[-5, -2], [-2, 2], [2, 5]], ood_value_range: [-20, 20], ood_noise_range: [10, 30]}}}
+    FractionalKnapsack: {base: {task: {name: FractionalKnapsackDataset},
+                                data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    MinCoinChange: {base: {task: {name: MinCoinChangeDataset, weight_range: null},
+                           data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    Quickselect: {base: {task: {name: QuickselectDataset, target_range: null, weight_range: null},
+                         data: {ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    BalancedPartition: {base: {task: {name: BalancedPartitionDataset, target_range: null, weight_range: null}, optim: {epochs: 1000},
+                               data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}},
+                        slurm: {cost: 10}}     # 10x the epochs
+    BinPacking: {base: {task: {name: BinPackingDataset, target_range: [10, 30], weight_range: null}, optim: {epochs: 1000},
+                        data: {ood_value_range: [11, 100], ood_noise_range: [10, 30]}},
+                 slurm: {cost: 10}}
+    ConvexHull: {base: {task: {name: ConvexHullDataset, value_range: [0, 10], target_range: null, weight_range: null},
+                        data: {train_value_ranges: [[0, 4], [3, 7], [6, 10]], ood_value_range: [11, 21], ood_noise_range: [1, 5]}}}
+    ThreeSumDecision: {base: {task: {name: ThreeSumDecisionDataset, value_range: [-20, 20], target_range: [-75, 75], weight_range: null, adversarial_range: [40, 60]},
+                              data: {train_value_ranges: [[-20, -6], [-7, 7], [6, 20]], ood_value_range: [-375, 375], ood_noise_range: [40, 60]}}}
+    LIS: {base: {task: {name: LISDataset, target_range: null, weight_range: null},
+                 data: {ood_value_range: null, ood_noise_range: null}}}
+    # Graph tasks: L nodes are L*L pair tokens, so batches are small,
+    # and the paper's length OOD is 16 nodes (256 tokens), not 64.
+    # Floyd--Warshall. An instance is an undirected Erd\H{o}s--R\'enyi graph on $n$ nodes (the \emph{length}), one token per ordered node pair ($n^2$ tokens) carrying the edge weight and the two normalized node indices. Token $(u,v)$ is selected iff edge $(u,v)$ is the last edge of some shortest path, i.e.\ the union of the shortest-path trees of every source.
+    FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
+                           data: {train_value_ranges: [[1, 6], [5, 11], [10, 15]], ood_lengths: [12, 16], ood_value_range: [16, 30],
+                                   ood_noise_range: [1, 10]},
+                           optim: {batch_size: 13, eval_batch_size: 8}},   # ~40 a step, as before
+                    slurm: {device: gpu, cost: 15}}   # ~13x the steps, of L^2 tokens each
+
+profiles:
+  dry_run:
+    seeds: 2
+    factors: {fishr_lambda: [0.0, 1.0]}
+    base:
+      data: {train_lengths: [5], ood_lengths: [8],
+             n_per_length: 43, n_eval_per_length: 32, curve_eval_limit: 16}
+      optim: {epochs: 2, batch_size: 16}
+      fishr: {anneal_iters: 2}
