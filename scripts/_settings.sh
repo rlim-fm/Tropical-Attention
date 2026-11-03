@@ -1,6 +1,6 @@
 # Sourced by run_all.sh, not run.
 #
-#   CONFIG       experiment YAML                          (configs/tropical.yaml)
+#   CONFIG       experiment YAML                          (run_all.sh: every configs/*.yaml)
 #   CAMPAIGNS    comma list of campaigns                  (every campaign)
 #   PROFILE      one profile instead, e.g. dry_run        (LOCAL=1 only)
 #   LOCAL=1      run here, one campaign after another, instead of submitting to Slurm
