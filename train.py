@@ -65,6 +65,26 @@ def _f1(tp, fp, fn):
     return 1.0 if tp + fp + fn == 0 else 2 * tp / (2 * tp + fp + fn)
 
 
+class _Clock:
+    """Wall seconds per phase of a run, for ``RunResult.extra['timing']``.
+
+    ``lap(phase)`` adds the time since the previous lap to ``phase``. CUDA runs
+    asynchronously, so a lap waits for the device first; otherwise a phase's
+    kernels would be billed to whichever phase next reads a result back.
+    """
+    def __init__(self, device):
+        self.cuda = str(device).startswith('cuda')
+        self.seconds = {}
+        self.last = time.perf_counter()
+
+    def lap(self, phase):
+        if self.cuda:
+            torch.cuda.synchronize()
+        now = time.perf_counter()
+        self.seconds[phase] = self.seconds.get(phase, 0.0) + now - self.last
+        self.last = now
+
+
 @torch.no_grad()
 def evaluate(model, envs, batch_size, device, limit=None):
     """Token-level F1 (micro over every token of every length), exact-subset rate, mean BCE.
@@ -230,6 +250,7 @@ def _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, be
 def run(ctx: RunContext) -> RunResult:
     base, cell, device = ctx.base, ctx.cell, ctx.device
     data, optim, fishr_cfg = base['data'], base['optim'], base['fishr']
+    clock = _Clock(device)
 
     # ---- data: one environment per training length (or value range) ----
     splits = _splits(ctx)
@@ -256,6 +277,7 @@ def run(ctx: RunContext) -> RunResult:
 
     curves = {'train_loss': [], 'fishr_penalty': [], 'id_val_loss': [], 'ood_len_f1': []}
     best_val, best_state, best_epoch, step = math.inf, None, -1, 0
+    clock.lap('setup')
     for epoch in range(int(optim['epochs'])):
         perms = {L: torch.randperm(len(X), generator=order) for L, (X, _) in train.items()}
         # Summed on the device in float64 (as Python floats were), read once per epoch.
@@ -285,8 +307,9 @@ def run(ctx: RunContext) -> RunResult:
             epoch_pen += penalty.detach().double()
         curves['train_loss'].append(epoch_loss.item() / steps_per_epoch)
         curves['fishr_penalty'].append(epoch_pen.item() / steps_per_epoch)
+        clock.lap('train')
         if not math.isfinite(curves['train_loss'][-1]):
-            return RunResult(curves=curves, diverged=True, steps=step)
+            return RunResult(curves=curves, diverged=True, steps=step, extra={'timing': clock.seconds})
 
         # ---- training-domain validation; schedule-free evaluates its averaged weights ----
         opt.eval()
@@ -297,6 +320,7 @@ def run(ctx: RunContext) -> RunResult:
             best_val, best_epoch = val['loss'], epoch
             best_state = copy.deepcopy(model.state_dict())
         opt.train()
+        clock.lap('epoch_eval')
 
     # ---- final metrics at the selected epoch (the paper, App. F, reports the final one) ----
     opt.eval()
@@ -307,14 +331,16 @@ def run(ctx: RunContext) -> RunResult:
     ood_m, ood_per_length = final(ood_len)
     val_m = final(ood_val)[0]
     noise_m = final(ood_noise)[0]
+    clock.lap('final')
     del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
     torch.cuda.empty_cache()            # the far eval's peak reuses the training memory
     far = _far_envs(ctx)
     if far:
         ood_per_length = {**ood_per_length, **_evaluate_far(
             lambda envs, b: evaluate(model, envs, b, device)[1], model, far, _far_batches(ctx, far))}
+    clock.lap('far')                    # with the far instances' generation
     metrics = _metrics(id_m, ood_m, ood_per_length, val_m, noise_m, curves, best_epoch, best_val)
-    return RunResult(metrics=metrics, curves=curves, steps=step)
+    return RunResult(metrics=metrics, curves=curves, steps=step, extra={'timing': clock.seconds})
 
 
 # ---- several seeds of one cell at once ----------------------------------------------
@@ -391,6 +417,7 @@ def run_group(ctxs):
     base, cell, device = first.base, first.cell, first.device
     data, optim, fishr_cfg = base['data'], base['optim'], base['fishr']
     S = len(ctxs)
+    clock = _Clock(device)                  # the group's phases, reported with every seed
 
     splits = [_splits(ctx) for ctx in ctxs]
     train = _stack_envs(splits, 'train', device)
@@ -453,6 +480,7 @@ def run_group(ctxs):
     best_state = {k: v.detach().clone() for k, v in params.items()}
     alive = torch.ones(S, dtype=torch.bool, device=device)
     step = 0
+    clock.lap('setup')
     for epoch in range(int(optim['epochs'])):
         # Each seed draws its permutations from its own generator, in the order `run` does.
         perms = [{L: torch.randperm(X.size(1), generator=g) for L, (X, _) in train.items()}
@@ -480,6 +508,7 @@ def run_group(ctxs):
             step += 1
             epoch_loss += erm.detach().double()
             epoch_pen += penalty.detach().double()
+        clock.lap('train')
         live = alive.tolist()
         for i, (tl, fp) in enumerate(zip(epoch_loss.tolist(), epoch_pen.tolist())):
             if not live[i]:
@@ -487,7 +516,8 @@ def run_group(ctxs):
             curves[i]['train_loss'].append(tl / steps_per_epoch)
             curves[i]['fishr_penalty'].append(fp / steps_per_epoch)
             if not math.isfinite(curves[i]['train_loss'][-1]):
-                results[i] = RunResult(curves=copy.deepcopy(curves[i]), diverged=True, steps=step)
+                results[i] = RunResult(curves=copy.deepcopy(curves[i]), diverged=True, steps=step,
+                                       extra={'timing': dict(clock.seconds)})
                 live[i] = False
         alive = torch.tensor(live, dtype=torch.bool, device=device)
         if not any(live):
@@ -513,6 +543,7 @@ def run_group(ctxs):
                 for k, v in params.items():
                     best_state[k][improved] = v[improved]
         opt.train()
+        clock.lap('epoch_eval')
 
     # ---- final metrics at each seed's selected epoch ----
     opt.eval()
@@ -523,6 +554,7 @@ def run_group(ctxs):
     ood_ms = final(ood_len)
     val_ms = final(ood_val)
     noise_ms = final(ood_noise)
+    clock.lap('final')
     del splits, train, id_val, id_test, ood_len, ood_val, ood_noise
     torch.cuda.empty_cache()            # the far eval's peak reuses the training memory
     far =[_far_envs(ctx) for ctx in ctxs]
@@ -533,6 +565,7 @@ def run_group(ctxs):
         del far
         far_ms = _evaluate_far(lambda e, b: [r[1] for r in evaluate_group(forward, state, e, b)],
                                skeleton, envs, _far_batches(first, envs, S))
+    clock.lap('far')                    # with the far instances' generation
     for i in range(S):
         if results[i] is not None:
             continue
@@ -543,5 +576,6 @@ def run_group(ctxs):
                            val_ms[i][0], noise_ms[i][0],
                            curves[i],
                            best_epoch[i], best_val[i])
-        results[i] = RunResult(metrics=metrics, curves=curves[i], steps=step)
+        results[i] = RunResult(metrics=metrics, curves=curves[i], steps=step,
+                               extra={'timing': dict(clock.seconds)})
     return results

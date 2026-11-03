@@ -2,7 +2,7 @@
 # Run an expkit command from the repository root, in its venv if it has one.
 #
 #   expkit/launch.sh run --config experiments/foo.yaml --cpu-workers 8
-#   sbatch -p main -N 1 -n 32 expkit/launch.sh run --config experiments/foo.yaml --cpu-workers 32
+#   sbatch -p main -N 1 -n 1 -c 32 expkit/launch.sh run --config experiments/foo.yaml --cpu-workers 32
 #
 # `python -m expkit submit` writes these sbatch lines for you (one per campaign).
 #

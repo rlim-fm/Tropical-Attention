@@ -23,6 +23,8 @@ def test_run_reports_declared_metrics(campaign):
     assert {'ood_noise_f1', 'ood_noise_exact', 'ood_val_exact'} <= set(cfg.metrics)
     for name in cfg.metrics:
         assert 0.0 <= result.metrics[name] <= 1.0, name
+    timing = result.extra['timing']
+    assert set(timing) == {'setup', 'train', 'epoch_eval', 'final', 'far'} and min(timing.values()) >= 0
 
 
 def _tiny(config, campaign):

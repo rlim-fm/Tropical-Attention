@@ -36,6 +36,7 @@ def test_group_matches_single_runs(model_type, head, fishr_lambda):
     for a, b in zip(singles, group):
         assert set(a.metrics) == set(b.metrics) and set(a.curves) == set(b.curves)
         assert a.steps == b.steps and not b.diverged
+        assert set(a.extra['timing']) == set(b.extra['timing']) == {'setup', 'train', 'epoch_eval', 'final', 'far'}
         assert _deviation(a, b) < 1e-5
 
 

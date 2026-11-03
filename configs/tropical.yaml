@@ -92,8 +92,8 @@ require_frozen: false
 # `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
 # one of its runs takes relative to the others (the longest are submitted first).
 # `any`: whichever lane (GPU queues or `main`'s cores) would finish it soonest;
-# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh). The set tasks' tiny
-# models train about as well on cores; the graph tasks' L^2 tokens stay on cards.
+# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh, which lists no CPU lane
+# unless CPU_LANE=1: tropical attention trains 12-18x slower on cores than on a card).
 slurm: {device: any, cost: 1}
 
 axes:
@@ -127,13 +127,13 @@ axes:
     FloydWarshall: {base: {task: {name: FloydWarshallDataset, value_range: [1, 15], target_range: null, weight_range: null, adversarial_range: [10, 20]},
                            data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: [16, 30], ood_noise_range: [1, 10]},
                            optim: {batch_size: 8, eval_batch_size: 8}},
-                    slurm: {device: gpu, cost: 15}}   # 12.5x the steps, of L^2 tokens each
+                    slurm: {device: gpu, cost: 8}}    # 12.5x the steps, of L^2 tokens each; measured ~0.8x BalancedPartition
     # SCC: value_range is the edge probability; noise flips each edge with ood_noise_prob.
     # Strongly connected components. An instance is a directed graph on $n$ nodes (the \emph{length}) from a community model (intra-community edge probability \texttt{value\_range}, inter-community 0.05), one token per ordered node pair ($n^2$ tokens) carrying the edge bit and the two normalized node indices. Token $(i,j)$ is selected iff $i$ and $j$ lie in the same strongly connected component.
     SCC: {base: {task: {name: SCCDataset, value_range: 0.001, target_range: null, weight_range: null, adversarial_range: null},
                  data: {ood_lengths: [12, 16], ood_far_lengths: [24, 40, 80], ood_value_range: 0.1, ood_noise_range: null},
                  optim: {batch_size: 8, eval_batch_size: 8}},
-          slurm: {device: gpu, cost: 15}}
+          slurm: {device: gpu, cost: 8}}
 
 profiles:
   dry_run:

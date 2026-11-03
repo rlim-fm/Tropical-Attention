@@ -31,7 +31,7 @@ from expkit.config import cell_label, load_config, parse_assignments
 from expkit.executor import device_slots, execute, export_worker_env, replay
 from expkit.record import RunSpec, parse_selector
 from expkit.store import Store
-from expkit.threads import configure_threads, export_device_env
+from expkit.threads import allocated_cpus, configure_threads, export_device_env
 
 
 def build_specs(cfg, root=None):
@@ -79,7 +79,8 @@ def _launch(args, todo, store_root):
     slots = device_slots(gpus, args.per_gpu, args.cpu_workers)
     threads = export_worker_env(slots)
     print(f'-- {len(todo)} runs on {sorted(set(slots))} ({len(slots)} concurrent'
-          f'{" seed groups" if args.group_seeds else ""}, {threads} thread(s) each)')
+          f'{" seed groups" if args.group_seeds else ""}, {threads} thread(s) each'
+          f' of {allocated_cpus()} CPU(s))')
     out = execute(todo, store_root, slots, retries=args.retries, threads=threads,
                   group_seeds=args.group_seeds)
     print(f'\ndone: {len(out["ok"])} ok, {len(out["failed"])} failed'

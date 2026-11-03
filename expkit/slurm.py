@@ -133,7 +133,9 @@ def submit(name, cores, args, *, dependency='singleton', partition=None, gb_per_
            f'--chdir={REPO}', '--output=slurm/%x-%j.out', f'--dependency={dependency}',
            *(['--kill-on-invalid-dep=yes'] if kill_on_invalid else []),
            *(['-p', partition] if partition else []), '-N', '1',
-           *([f'--cpus-per-gpu={cpus_per_gpu}'] if per_gpu else ['-n', str(cores)]),
+           # One task of `cores` CPUs, not `cores` tasks: the job is one process (and its
+           # workers), and only this form sets SLURM_CPUS_PER_TASK to the whole grant.
+           *([f'--cpus-per-gpu={cpus_per_gpu}'] if per_gpu else ['-n', '1', '-c', str(cores)]),
            *([f'--mem={mem}G'] if mem else []), *([f'--gres={gres(gpus, gpu_type)}'] if gpus else []),
            *extra, launcher(), *args]
     log('$ ' + ' '.join(shlex.quote(c) for c in cmd))

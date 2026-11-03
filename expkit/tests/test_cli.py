@@ -96,7 +96,7 @@ def test_submit_routes_campaigns_and_starts_the_longest_first(tmp_path, monkeypa
     assert '--job-name=xk-quad-noisy' in noisy and '-p mixed' in noisy
     assert '--cpus-per-gpu=40' in noisy and '--gres=gpu:pro6000:1' in noisy and ' -n ' not in noisy
     assert '--per-gpu 8' in noisy and '--group-seeds' in noisy
-    assert '--job-name=xk-quad-clean' in clean and '-p main' in clean and '-n 32' in clean
+    assert '--job-name=xk-quad-clean' in clean and '-p main' in clean and '-n 1 -c 32' in clean
     assert '--gres' not in clean and '--cpu-workers 32' in clean
     assert all('-p main' in l for l in lines[2:]) and len(lines) == 3   # the grand report
 
@@ -136,7 +136,7 @@ def test_submit_sends_any_campaigns_to_cpu_lanes_too(tmp_path, monkeypatch, caps
         '--lanes', 'mixed:pro6000:1:40::12 main:cpu:2:32::12:0.5')
     a, b, c = [l for l in capsys.readouterr().out.splitlines() if l.startswith('$ sbatch')]
     assert '-p mixed' in a                             # 10 on the card beats 20 on cores
-    assert '-p main' in b and '-n 32' in b and '--cpu-workers 12' in b and '--gres' not in b
+    assert '-p main' in b and '-n 1 -c 32' in b and '--cpu-workers 12' in b and '--gres' not in b
     assert '-p mixed' in c                             # device: gpu never takes a CPU lane
 
 

@@ -86,8 +86,8 @@ require_frozen: false
 # `expkit submit` (scripts/run_all.sh): where each campaign's job may go, and how long
 # one of its runs takes relative to the others (the longest are submitted first).
 # `any`: whichever lane (GPU queues or `main`'s cores) would finish it soonest;
-# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh). The set tasks' tiny
-# models train about as well on cores; the graph tasks' L^2 tokens stay on cards.
+# `gpu` / `cpu`: only those lanes (see scripts/_settings.sh, which lists no CPU lane
+# unless CPU_LANE=1: tropical attention trains 12-18x slower on cores than on a card).
 slurm: {device: any, cost: 1}
 
 axes:
@@ -123,7 +123,7 @@ axes:
                            data: {train_value_ranges: [[1, 6], [5, 11], [10, 15]], ood_lengths: [12, 16], ood_value_range: [16, 30],
                                    ood_noise_range: [1, 10]},
                            optim: {batch_size: 13, eval_batch_size: 8}},   # ~40 a step, as before
-                    slurm: {device: gpu, cost: 15}}   # ~13x the steps, of L^2 tokens each
+                    slurm: {device: gpu, cost: 8}}    # ~13x the steps, of L^2 tokens each; measured ~0.8x BalancedPartition
 
 profiles:
   dry_run:

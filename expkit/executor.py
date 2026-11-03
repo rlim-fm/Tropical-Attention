@@ -335,10 +335,14 @@ def execute(specs, store_root, slots, *, retries=2, worker=run_one, log=print, t
         ok.append(spec.key)
         headline = ', '.join(f'{k}={v:.4g}' for k, v in out['metrics'].items()
                              if isinstance(v, (int, float)))
-        group = (out['record'].extra or {}).get('seed_group')
+        extra = out['record'].extra or {}
+        group = extra.get('seed_group')
+        wall = out.get('wall_seconds', 0)
+        # A seed's wall_seconds is its share of the group's; print the group's too.
+        took = f'{wall * group:.1f}s for the group of {group}, {wall:.1f}s each' if group else f'{wall:.1f}s'
+        phases = ' '.join(f'{k}={v:.0f}s' for k, v in (extra.get('timing') or {}).items())
         log(f'  ✓ [{len(ok) + len(failed)}/{total}] {spec.key} {spec.label} '
-            f'({out.get("wall_seconds", 0):.1f}s, {out.get("device")}'
-            f'{f", group of {group}" if group else ""}) {headline}')
+            f'({took}, {out.get("device")}){f" [{phases}]" if phases else ""} {headline}')
 
     round_slots = slots
     while queue_items:
